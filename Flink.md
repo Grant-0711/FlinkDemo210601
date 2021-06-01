@@ -340,1180 +340,9 @@ get /flink-standalone/cluster_grantu/leader/rest_server_lock
 
 
 
-### 2.3 测试
-
-测试： 
-
-spark-shell --master spark://hadoop103:7077:  交互式环境
-
-```scala
-
-```
-
-
-
-spark-submit:  用来提交jar包
-
-用法： spark-submit  [options]   jar包   jar包中类的参数
-
-```shell
-
-```
-
-
-
-### 2.4 --deploy-mode
-
-client(默认)：  会在Client本地启动Driver程序！
-
-```
-
-```
-
-cluster:    会在集群中选择其中一台机器启动Driver程序！
-
-```
-
-```
-
-
-
-区别：
-
-①Driver程序运行位置的不同会影响结果的查看！
-
-​				client： 将某些算子的结果收集到client端！
-
-​								要求client端Driver不能中止！
-
-​				cluster（生产）:  需要在Driver运行的executor上查看日志！
-
-
-
-②client：  jar包只需要在client端有！
-
-​	cluster:  保证jar包可以在集群的任意台worker都可以读到！
-
-
-
-## 3.配置历史服务
-
-作用：在Job离线期间，依然可以通过历史服务查看之前生成的日志！
-
-①配置 SPARK_HOME/conf/spark-defaults.conf
-
-影响启动的spark应用
-
-```
-spark.eventLog.enabled true
-#需要手动创建
-spark.eventLog.dir hdfs://hadoop102:9820/sparklogs
-```
-
-
-
-②配置 SPARK_HOME/conf/spark-env.sh
-
-影响的是spark的历史服务进程
-
-```
-export SPARK_HISTORY_OPTS="
--Dspark.history.ui.port=18080 
--Dspark.history.fs.logDirectory=hdfs://hadoop102:9820/sparklogs
--Dspark.history.retainedApplications=30"
-```
-
-
-
-③分发以上文件，重启集群
-
-④启动历史服务进程
-
-```
-sbin/start-historyserver.sh
-```
-
-
-
-## 4.spark on yarn
-
-YARN： 集群！
-
-Spark:  相对于YARN来说，就是一个客户端，提交Job到YARN上运行！
-
-​			 
-
-MR ON YARN提交流程：  ①Driver 请求 RM，申请一个applicatiion
-
-​											 ②RM接受请求，此时，RM会首先准备一个Container运行 ApplicationMaster
-
-​											 ③ ApplicationMaster启动完成后，向RM进行注册，向RM申请资源运行
-
-​													其他任务
-
-​												Hadoop MR :  申请Container运行MapTask，ReduceTask
-
-​												Spark：   申请Container运行 Executor
-
-
-
-只需要选择任意一台可以连接上YARN的机器，安装Spark即可！
-
-
-
-### 4.1 配置
-
-确认下YARN的 yarn-site.xml配置中
-
-```xml
-<!--是否启动一个线程检查每个任务正使用的物理内存量，如果任务超出分配值，则直接将其杀掉，默认是true -->
-<property>
-     <name>yarn.nodemanager.pmem-check-enabled</name>
-     <value>false</value>
-</property>
-
-<!--是否启动一个线程检查每个任务正使用的虚拟内存量，如果任务超出分配值，则直接将其杀掉，默认是true -->
-<property>
-     <name>yarn.nodemanager.vmem-check-enabled</name>
-     <value>false</value>
-</property>
-
-```
-
-```xml
-<property>
-        <name>yarn.log.server.url</name>
-        <value>http://hadoop102:19888/jobhistory/logs</value>
-    </property>
-```
-
-
-
-分发 yarn-site.xml，重启YARN！
-
-
-
-编辑 SPARK_HOME/conf/spark-env.sh
-
-```shell
-YARN_CONF_DIR=/opt/module/hadoop-3.1.3/etc/hadoop
-
-export SPARK_HISTORY_OPTS="
--Dspark.history.ui.port=18080 
--Dspark.history.fs.logDirectory=hdfs://hadoop102:9820/sparklogs
--Dspark.history.retainedApplications=30"
-```
-
-编辑 SPARK_HOME/conf/spark-defaults.conf
-
-```
-spark.eventLog.enabled true
-#需要手动创建
-spark.eventLog.dir hdfs://hadoop102:9820/sparklogs
-#spark历史服务的地址和端口
-spark.yarn.historyServer.address=hadoop103:18080
-spark.history.ui.port=18080
-```
-
-
-
-### 4.2 测试
-
-spark-shell --master yarn:  交互式环境
-
-```scala
-
-```
-
-spark-submit:  用来提交jar包
-
-用法： spark-submit  [options]   jar包   jar包中类的参数
-
-```shell
-
-```
-
-```
-
-```
-
-
-
 # 4.Flink运行架构
 
-## 1.RDD的介绍
 
-RDD：  RDD在Driver中封装的是计算逻辑，而不是数据！
-
-​			  使用RDD编程后，调用了行动算子后，此时会提交一个Job，在提交Job时会划分Stage，划分之后，将每个阶段的每个分区使用一个Task进行计算处理！
-
-​			Task封装的就是计算逻辑！ 
-
-​			Driver将Task发送给Executor执行，Driver只是将计算逻辑发送给了Executor!Executor在执行计算逻辑时，此时发现，我们需要读取某个数据，举例(textFile)
-
-​		
-
-​		RDD真正被创建是在Executor端！
-
-​		移动计算而不是移动数据，如果读取的数据是HDFS上的数据时，此时HDFS上的数据以block的形式存储在DataNode所在的机器！
-
-​		如果当前Task要计算的那片数据，恰好就是对应的那块数据，那块数据在102，当前Job在102,104启动了Executor，当前Task发送给102更合适！省略数据的网络传输，直接从本地读取块信息！
-
-
-
-## 2.RDD的核心特征
-
-```
- 一组分区
- - A list of partitions
- 
- private var partitions_ : Array[Partition] = _
- 
- #计算分区，生成一个数组，总的分区数
- protected def getPartitions: Array[Partition]
- 
- 每个Task通过compute读取分区的数据
-*  - A function for computing each split
- def compute(split: Partition, context: TaskContext): Iterator[T]
- 
- 
- 记录依赖于其他RDD的依赖关系，用于容错时，重建数据
-*  - A list of dependencies on other RDDs
-
-针对RDD[(k,v)]，有分区器！
-*  - Optionally, a Partitioner for key-value RDDs (e.g. to say that the RDD is hash-partitioned)
-
-
-针对一些数据源，可以设置数据读取的偏好位置，用来将task发送给指定的节点，可选的
-*  - Optionally, a list of preferred locations to compute each split on (e.g. block locations for
-*    an HDFS file)
-```
-
-
-
-## 3.创建RDD
-
-RDD怎么来： ①new
-
-​								直接new
-
-​								调用SparkContext提供的方法
-
-​						 ②由一个RDD转换而来
-
-
-
-### 3.1 makeRDD
-
-从集合中构建RDD
-
-```scala
-// 返回ParallelCollectionRDD
-def makeRDD[T: ClassTag](
-      seq: Seq[T],   
-      numSlices: Int = defaultParallelism): RDD[T] = withScope {
-    parallelize(seq, numSlices)
-  }
-```
-
-
-
-```
-val rdd1: RDD[Int] = sparkContext.makeRDD(list)
-    //等价
-val rdd2: RDD[Int] = sparkContext.parallelize(list)
-```
-
-
-
-#### 3.1.1 分区数
-
-numSlices: 控制集合创建几个分区！
-
-
-
-在本地提交时，defaultParallelism（默认并行度）由以下参数决定：
-
-```scala
-override def defaultParallelism(): Int =
-// 默认的 SparkConf中没有设置spark.default.parallelism
-  scheduler.conf.getInt("spark.default.parallelism", totalCores)
-```
-
-默认defaultParallelism=totalCores(当前本地集群可以用的总核数)，目的为了最大限度并行运行！
-
-​											standalone / YARN模式， totalCores是Job申请的总的核数！
-
-
-
-本地集群总的核数取决于  ： Local[N]
-
-​				local:  1核
-
-​				local[2]: 2核
-
-​				local[*] : 所有核
-
-
-
-#### 3.1.2 分区策略
-
-```scala
- val slices = ParallelCollectionRDD.slice(data, numSlices).toArray
-
-/*
-		seq: List(1, 2, 3, 4, 5)
-		numSlices: 4
-*/
-def slice[T: ClassTag](seq: Seq[T], numSlices: Int): Seq[Seq[T]] = {
-    if (numSlices < 1) {
-      throw new IllegalArgumentException("Positive number of partitions required")
-    }
-   
-    
-    /*
-    	length:5
-        numSlices: 4
-        
-        [0,4)
-        { (0,1),(1,2),(2,3),(3,5)   }
-    */
-    def positions(length: Long, numSlices: Int): Iterator[(Int, Int)] = {
-        [0,4)
-      (0 until numSlices).iterator.map { i =>
-        val start = ((i * length) / numSlices).toInt
-        val end = (((i + 1) * length) / numSlices).toInt
-        (start, end)
-      }
-    }
-    seq match {
-      // Range特殊对待
-      case _ =>
-        // ｛1，2，3，4，5｝
-        val array = seq.toArray // To prevent O(n^2) operations for List etc
-        
-        //{ (0,1),(1,2),(2,3),(3,5)   }
-        positions(array.length, numSlices).map { case (start, end) =>
-            {1}
-            {2}
-            {3}
-            {4,5}
-            array.slice(start, end).toSeq
-        }.toSeq
-    }
-  }
-```
-
-总结：  ParallelCollectionRDD在对集合中的元素进行分区时，大致是平均分。如果不能整除，后面的分区会多分！
-
-
-
-### 3.2 textfile
-
-textfile从文件系统中读取文件，基于读取的数据，创建HadoopRDD！
-
-
-
-#### 3.2.1 分区数
-
-```scala
-def textFile(
-      path: String,
-      minPartitions: Int = defaultMinPartitions): RDD[String] = withScope {
-    assertNotStopped()
-    hadoopFile(path, classOf[TextInputFormat], classOf[LongWritable], classOf[Text],
-      minPartitions).map(pair => pair._2.toString).setName(path)
-  }
-```
-
-
-
-defaultMinPartitions:
-
-```scala
-// 使用defaultParallelism(默认集群的核数) 和 2取最小
-def defaultMinPartitions: Int = math.min(defaultParallelism, 2)
-```
-
-
-
-defaultMinPartitions和minPartitions 不是最终 分区数，但是会影响最终分区数！
-
-
-
-最终分区数，取决于切片数！
-
-#### 3.2.2 分区策略
-
-```scala
-override def getPartitions: Array[Partition] = {
-    val jobConf = getJobConf()
-    // add the credentials here as this can be called before SparkContext initialized
-    SparkHadoopUtil.get.addCredentials(jobConf)
-    try {
-        // getInputFormat() 获取输入格式
-      val allInputSplits = getInputFormat(jobConf).getSplits(jobConf, minPartitions)
-      val inputSplits = if (ignoreEmptySplits) {
-        allInputSplits.filter(_.getLength > 0)
-      } else {
-        allInputSplits
-      }
-      
-        // 切片数 就是分区数
-      val array = new Array[Partition](inputSplits.size)
-      for (i <- 0 until inputSplits.size) {
-        array(i) = new HadoopPartition(id, i, inputSplits(i))
-      }
-      array
-    }
-  }
-```
-
-
-
-切片策略：
-
-```java
-public InputSplit[] getSplits(JobConf job, int numSplits)
-    throws IOException {
-    StopWatch sw = new StopWatch().start();
-    FileStatus[] files = listStatus(job);
-    
-    // Save the number of input files for metrics/loadgen
-    job.setLong(NUM_INPUT_FILES, files.length);
-    
-    // 计算所有要切的文件的总大小
-    long totalSize = 0;                           // compute total size
-    for (FileStatus file: files) {                // check we have valid files
-      if (file.isDirectory()) {
-        throw new IOException("Not a file: "+ file.getPath());
-      }
-      totalSize += file.getLen();
-    }
-
-    // goalSize： 目标大小  numSplits=minPartitions
-    long goalSize = totalSize / (numSplits == 0 ? 1 : numSplits);
-    // minSize: 默认1
-    long minSize = Math.max(job.getLong(org.apache.hadoop.mapreduce.lib.input.
-      FileInputFormat.SPLIT_MINSIZE, 1), minSplitSize);
-
-    // generate splits
-    ArrayList<FileSplit> splits = new ArrayList<FileSplit>(numSplits);
-    NetworkTopology clusterMap = new NetworkTopology();
-    
-    // 遍历要切片的文件
-    for (FileStatus file: files) {
-      Path path = file.getPath();
-      long length = file.getLen();
-        
-        //如果文件不为空，依次切片
-      if (length != 0) {
-        FileSystem fs = path.getFileSystem(job);
-        BlockLocation[] blkLocations;
-        if (file instanceof LocatedFileStatus) {
-          blkLocations = ((LocatedFileStatus) file).getBlockLocations();
-        } else {
-          blkLocations = fs.getFileBlockLocations(file, 0, length);
-        }
-          
-          //判断文件是否可切，如果可切，依次切片
-        if (isSplitable(fs, path)) {
-            
-            // 获取块大小  默认128M
-          long blockSize = file.getBlockSize();
-            
-            // 获取片大小
-          long splitSize = computeSplitSize(goalSize, minSize, blockSize);
-
-          long bytesRemaining = length;
-          while (((double) bytesRemaining)/splitSize > SPLIT_SLOP) {
-            String[][] splitHosts = getSplitHostsAndCachedHosts(blkLocations,
-                length-bytesRemaining, splitSize, clusterMap);
-            splits.add(makeSplit(path, length-bytesRemaining, splitSize,
-                splitHosts[0], splitHosts[1]));
-            bytesRemaining -= splitSize;
-          }
-
-          if (bytesRemaining != 0) {
-            String[][] splitHosts = getSplitHostsAndCachedHosts(blkLocations, length
-                - bytesRemaining, bytesRemaining, clusterMap);
-            splits.add(makeSplit(path, length - bytesRemaining, bytesRemaining,
-                splitHosts[0], splitHosts[1]));
-          }
-        } else {
-            // 文件不可切，整个文件作为1片
-          String[][] splitHosts = getSplitHostsAndCachedHosts(blkLocations,0,length,clusterMap);
-          splits.add(makeSplit(path, 0, length, splitHosts[0], splitHosts[1]));
-        }
-          // 文件为空，空文件单独切一片
-      } else { 
-        //Create empty hosts array for zero length files
-        splits.add(makeSplit(path, 0, length, new String[0]));
-      }
-    }
-    sw.stop();
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Total # of splits generated by getSplits: " + splits.size()
-          + ", TimeTaken: " + sw.now(TimeUnit.MILLISECONDS));
-    }
-    return splits.toArray(new FileSplit[splits.size()]);
-  }
-```
-
-
-
-片大小的计算：
-
-```java
-long splitSize = computeSplitSize(goalSize, minSize, blockSize);
-
-// 默认blockSize=128M    goalSize： 46
-return Math.max(minSize, Math.min(goalSize, blockSize));
-```
-
-
-
-总结：  一般情况下，blockSize =  splitSize，默认文件有几块，切几片！
-
-## 4.RDD的算子分类
-
-单Value类型的RDD：  RDD[value]
-
-K-V类型的RDD：  RDD[(k,v)]
-
-双Value类型的RDD：   RDD[value1]      RDD[value2]
-
-### 4.1 单Value类型的RDD使用算子
-
-#### 4.1.1map
-
-```scala
-def map[U: ClassTag](f: T => U): RDD[U] = withScope {
-    // 当f函数存在闭包时，将闭包进行清理，确保使用的闭包变量可以被序列化，才能发给task
-    val cleanF = sc.clean(f)
-    
-    // iter 使用scala集合中的迭代器，调用 map方法，迭代集合中的元素，每个元素都调用 f
-    new MapPartitionsRDD[U, T](this, (_, _, iter) => iter.map(cleanF))
-  }
-```
-
-MapPartitionsRDD
-
-
-
-
-
-#### 4.1.2 mapPartitions
-
-```scala
-def mapPartitions[U: ClassTag](
-      f: Iterator[T] => Iterator[U],
-      preservesPartitioning: Boolean = false): RDD[U] = withScope {
-    val cleanedF = sc.clean(f)
-    new MapPartitionsRDD(
-      this,
-      (_: TaskContext, _: Int, iter: Iterator[T]) => cleanedF(iter),
-      preservesPartitioning)
-  }
-```
-
-MapPartitionsRDD
-
-
-
-```scala
-//分区整体调用一次函数
-mapPartitions:  (_: TaskContext, _: Int, iter: Iterator[T]) => cleanedF(iter)
-
-// 分区中的每一个元素，调用一次f（函数）
-map:  (this, (_, _, iter) => iter.map(cleanF)
-```
-
-区别：
-
-①mapPartitions(批处理) 和 map（1对1）
-
-②某些场景下，只能使用mapPartitions
-
-​			将一个分区的数据写入到数据库中！
-
-③ map（1对1） ，只能对每个元素都进行map处理
-
-​		mapPartitions(批处理)，可以对一个分区的数据进行任何类型的处理，例如filter等其他算子都行！
-
-​		返回的记录可以和之前输入的记录个数不同！
-
-
-
-#### 4.1.3 mapPartitionsWithIndex
-
-mapPartitions 为每个分区的数据提供了一个对应分区的索引号。
-
-
-
-#### 4.1.4 flatMap
-
-扁平化
-
-
-
-#### 4.1.5 glom
-
-glom将一个分区的数据合并到一个 Array中，返回一个新的RDD
-
-```
-def glom(): RDD[Array[T]] = withScope {
-  new MapPartitionsRDD[Array[T], T](this, (_, _, iter) => Iterator(iter.toArray))
-}
-```
-
-
-
-#### 4.1.6 shuffle
-
-shuffle：  在Hadoop的MR中，shuffle意思为混洗，目的是为了在MapTask和ReduceTask传递数据！
-
-​					在传递数据时，会对数据进行分区，排序等操作！
-
-
-
-​					当Job有reduce阶段时，才会有shuffle!
-
-
-
-Spark中的shuffle：
-
-①spark中只有特定的算子会触发shuffle，shuffle会在不同的分区间重新分配数据！
-
-​		如果出现了shuffle，会造成需要跨机器和executor传输数据，这样会造成低效和额外的资源消耗！
-
-
-
-②和Hadoop的shuffle不同的时，数据分到哪些区是确定的，但是在区内的顺序不一定有序！
-
-​	如果希望shuffle后的数据有序，可以以下操作：
-
-​		a) 调用mapPartitions,对每个分区的数据，进行手动排序！
-
-​		b)repartitionAndSortWithinPartitions
-
-​		c)sortBy
-
-​		
-
-③什么操作会导致shuffle
-
-​		a）重新分区的算子 ： reparition, collase
-
-​		b)  xxxBykey类型的算子，除了 count(统计)ByKey
-
-​		c）  join类型的算子，例如[`cogroup`](http://spark.apache.org/docs/latest/rdd-programming-guide.html#CogroupLink) and [`join`](http://spark.apache.org/docs/latest/rdd-programming-guide.html#JoinLink).
-
-
-
-④在Spark中，shuffle会带来性能消耗，主要涉及  磁盘IO,网络IO，对象的序列化和反序列化！
-
-​	在Spark中，基于MR中提出的MapTask和ReduceTask概念，spark也将shuffle中组织数据的task称为
-
-​	maptask,将聚合数据的task称为reduceTask!
-
-
-
-​	maptask和spark的map算子无关，reducetask和reduce算子无关！
-
-
-
-​	Spark的shuffle，mapTask将所有的数据先缓存如内存，如果内存不足，将数据基于分区排序后，溢写到磁盘！ ReduceTask读取相关分区的数据块，组织数据！
-
-​	mapTask端在组织数据时，如果内存不够，导致磁盘溢写，触发GC！
-
-
-
-​	Spark的shuffle同时会在磁盘上产生大量的溢写的临时文件，这个临时文件会一直保留，直到后续的RDD完全不需要使用！此举是为了避免在数据容错时，重新计算RDD，重新产生shuffle文件！
-
-
-
-​	长时间运行的Spark的Job，如果在shuffle中产生大量的临时的磁盘文件，会占用大量的本地磁盘空间，可以通过spark.local.dir设置本地数据保存的目录！
-
-
-
-总结： ①Spark的shuffle和Hadoop的shuffle目的都是为了 在不同的task交换数据！
-
-​			 ②Spark的shuffle借鉴了hadoop的shuffle，但是在细节上略有不同
-
-​					hadoop的shuffle：  数据被拉取到ReduceTask端时，会经过排序！
-
-​					在Spark中，shuffle在ReduceTask端，拉取数据后不会排序！
-
-​			③shuffle会消耗性能，因此能避免就避免，避免不了，采取一些优化的策略！
-
-​	
-
-#### 4.1.7 groupby
-
-```
-def groupBy[K](f: T => K)(implicit kt: ClassTag[K]): RDD[(K, Iterable[T])] = withScope {
-  groupBy[K](f, defaultPartitioner(this))
-}
-```
-
-将RDD中的元素通过一个函数进行转换，将转换后的类型作为KEY，进行分组！
-
-#### 4.1.8 defaultPartitioner(this)
-
-defaultPartitioner： 为类似cogroup-like类型的算子，选择一个分区器！在一组RDD中，选择一个分区器！
-
-
-
-如何确定新的RDD的分区数：  
-
-​			如果设置了并行度，使用并行度作为分区数，否则使用上游最大分区数
-
-​			
-
-如何确定分区器：
-
-​			在上述确定了分区数后，就默认使用上游最大分区数所在RDD的分区器！如果分区器可以用，就使用！
-
-​			
-
-​			否则，就使用HashPartitioner，HashPartitioner使用上述确定的分区数，进行分区！
-
-
-
-
-
-总结：  默认不设置并行度，取上游最大分区数，作为下游分区数。
-
-​			 默认取上游最大分区数的分区器，如果没有，就使用HashPartitioner!
-
-
-
-```scala
-def defaultPartitioner(rdd: RDD[_], others: RDD[_]*): Partitioner = {
-    //  将所有的RDD，放入到一个Seq中
-    val rdds = (Seq(rdd) ++ others)
-    /*
-    	_.partitioner:  rdd.partitioner   =  Option[Partitioner]
-    	
-    	_.partitioner.exists(_.numPartitions > 0) 返回true: 
-    			_.partitioner 不能为 none ,代表 RDD有分区器
-    			且
-    			分区器的总的分区数 > 0 
-    			
-   		hasPartitioner: Seq[Rdd] :  都有Partitioner，且分区器的总的分区数 > 0 
-    			
-    */  
-    val hasPartitioner = rdds.filter(_.partitioner.exists(_.numPartitions > 0))
-
-    // 取上游分区数最大的RDD  hasMaxPartitioner：要么为none，要么是拥有最大分区数和分区器的RDD
-    val hasMaxPartitioner: Option[RDD[_]] = if (hasPartitioner.nonEmpty) {
-      Some(hasPartitioner.maxBy(_.partitions.length))
-    } else {
-      None
-    }
-
-    // 如果设置了默认并行度，defaultNumPartitions=默认并行度，否则等于上游最大的分区数！
-    val defaultNumPartitions = if (rdd.context.conf.contains("spark.default.parallelism")) {
-      rdd.context.defaultParallelism
-    } else {
-      rdds.map(_.partitions.length).max
-    }
-
-    // If the existing max partitioner is an eligible one, or its partitions number is larger
-    // than or equal to the default number of partitions, use the existing partitioner.
-    /*
-    	如果上游存在有最大分区数的RDD有分区器，且(这个分区器可用 或 默认分区数 <= 上游存在有最大分区数的RDD的分区数)  就使用 上游存在有最大分区数的RDD的分区器，否则，就new HashPartitioner(defaultNumPartitions)
-    */
-    if (hasMaxPartitioner.nonEmpty && (isEligiblePartitioner(hasMaxPartitioner.get, rdds) ||
-        defaultNumPartitions <= hasMaxPartitioner.get.getNumPartitions)) {
-      hasMaxPartitioner.get.partitioner.get
-    } else {
-      new HashPartitioner(defaultNumPartitions)
-    }
-  }
-```
-
-
-
-#### 4.1.9  Partitioner
-
-```scala
-abstract class Partitioner extends Serializable {
-    // 数据所分的总区数
-  def numPartitions: Int
-    // 返回每个元素的分区号
-  def getPartition(key: Any): Int
-}
-```
-
-
-
-spark默认提供两个分区器：
-
-HashPartitioner:  调用元素的hashCode方法，基于hash值进行分区！
-
-```scala
-
-```
-
-RangeParitioner:   局限：针对数据必须是可以排序的类型！
-
-​				将数据，进行采样，采样（水塘抽样）后确定一个范围(边界)，将RDD中的每个元素划分到边界中！
-
-​				采样产生的边界，会尽可能保证RDD的元素在划分到边界后，尽可能均匀！
-
-
-
-
-
-RangeParitioner 对比 HashPartitioner的优势：  一定程序上，可以避免数据倾斜！
-
-#### 4.1.10 sample
-
-```scala
-/*
-   withReplacement： 是否允许一个元素被重复抽样
-   		true： PoissonSampler算法抽样
-   		false： BernoulliSampler算法抽样
-   		
-   fraction： 抽取样本的大小。
-   			withReplacement=true： fraction >=0 
-   			withReplacement=false :  fraction : [0,1]
-   			
-   seed: 随机种子，种子相同，抽样的结果相同！
-*/
-def sample(
-    withReplacement: Boolean,
-    fraction: Double,
-    seed: Long = Utils.random.nextLong): RDD[T]
-```
-
-
-
-#### 4.1.11 distinct
-
-```scala
-
-```
-
-去重！有可能会产生shuffle，也有可能没有shuffle！
-
-有shuffle，原理基于reduceByKey进行去重！
-
-
-
-可以使用groupBy去重，之后支取分组后的key部分！
-
-#### 4.1.12 依赖关系
-
-narrow dependency： 窄依赖！
-
-wide(shuffle) dependency： 宽（shuffle）依赖！ 宽依赖会造成shuffle！会造成阶段的划分！
-
-
-
-#### 4.1.13 coalesce
-
-```scala
-def coalesce(numPartitions: Int, shuffle: Boolean = false,
-             partitionCoalescer: Option[PartitionCoalescer] = Option.empty)
-            (implicit ord: Ordering[T] = null)
-    : RDD[T]
-```
-
-coalesce: 可以将一个RDD重新划分到若干个分区中！是一个重新分区的算子！
-
-​			默认coalesce只会产生窄依赖！默认只支持将多的分区合并到少的分区！
-
-​			如果将少的分区，扩充到多的分区，此时，coalesce产生的新的分区器依旧为old的分区数，不会变化！
-
-
-
-​			如果需要将少的分区，合并到多的分区，可以传入 shuffle=true，此时会产生shuffle！
-
-
-
-#### 4.1.14 repartition
-
-repartition： 重新分区的算子！一定有shuffle！
-
-​			如果是将多的分区，核减到少的分区，建议使用collase，否则使用repartition
-
-
-
-#### 4.1.15 ClassTag
-
-泛型为了在编译时，检查方法传入的参数类型是否复合指定的泛型（类型检查）
-
-
-
-泛型在编译后，泛型会被擦除。 如果在Java代码中，泛型会统一使用Object代替，如果scala会使用Any代替！
-
-在运行时，不知道泛型的类型！
-
-
-
-针对Array类型，实例化一个数组时，必须知道当前的数组是个什么类型的数组！
-
-java:   String []
-
-scala：  Array[String]
-
-
-
-Array和泛型共同组成数组的类型！ 在使用一些反射框架实例化一个数组对象时，必须指定数组中的泛型！
-
-需要ClassTag,来标记Array类型在擦除前，其中的泛型类型！
-
-
-
-#### 4.1.16 filter
-
-```scala
-def filter(f: T => Boolean): RDD[T] = withScope {
-    val cleanF = sc.clean(f)
-    new MapPartitionsRDD[T, T](
-      this,
-      (_, _, iter) => iter.filter(cleanF),
-      preservesPartitioning = true)
-  }
-```
-
-将RDD中的元素通过传入的函数进行计算，返回true的元素可以保留！
-
-
-
-#### 4.1.17 sortBy
-
-```scala
-def sortBy[K](
-    f: (T) => K,
-    ascending: Boolean = true,
-    numPartitions: Int = this.partitions.length)
-    (implicit ord: Ordering[K], ctag: ClassTag[K]): RDD[T] = withScope {
-  this.keyBy[K](f)
-      .sortByKey(ascending, numPartitions)
-      .values
-}
-```
-
-使用函数将RDD中的元素进行转换，之后基于转换的类型进行比较排序，排序后，再返回对应的转换之前的元素！
-
-
-
-本质利用了sortByKey,有shuffle！
-
-sortByKey在排序后，将结果进行重新分区时，使用RangePartitioner!
-
-
-
-对于自定义类型进行排序：
-
-​		①将自定义类型实现Ordered接口
-
-​		②提供对自定义类型排序的Ordering
-
-
-
-#### 4.1.18 pipe
-
-pipe允许一个shell脚本来处理RDD中的元素！
-
-
-
-在shell脚本中，可以使用READ函数读取RDD中的每一个数据，使用echo将处理后的结果输出！
-
-每个分区都会调用一次脚本！
-
-### 4.2 双Value类型
-
-
-
-#### 4.2.3 substract
-
-两个RDD取差集，产生shuffle！取差集合时，会使用当前RDD的分区器和分区数！
-
-
-
-#### 4.2.4 cartesian
-
-两个RDD做笛卡尔积，不会产生shuffle！ 运算后的RDD的分区数=所有上游RDD分区数的乘积。
-
-
-
-#### 4.2.5 zip
-
-将两个RDD，相同分区，相同位置的元素进行拉链操作，返回一个(x,y)
-
-要求： 两个RDD的分区数和分区中元素的个数必须相同！
-
-
-
-#### 4.2.6 zipWithIndex
-
-当前RDD的每个元素和对应的index进行拉链，返回(ele,index)
-
-
-
-#### 4.2.7 zipPartitions
-
-两个RDD进行拉链，在拉链时，可以返回任意类型的元素的迭代器！更加灵活！
-
-
-
-### 4.3 key-value类型
-
-key-value类型的算子，需要经过隐式转换将RDD[(k,v)]转换为 PairRDDFunctions,才可以调用以下算子
-
-#### 4.3.1 reduceByKey
-
-```
-def reduceByKey(func: (V, V) => V): RDD[(K, V)] = self.withScope {
-  reduceByKey(defaultPartitioner(self), func)
-}
-```
-
-会在Map端进行局部合并（类似Combiner）
-
-注意：合并后的类型必须和之前value的类型一致！
-
-
-
-#### 4.3.2 aggregateByKey
-
-```scala
-
-def aggregateByKey[U: ClassTag]
-(zeroValue: U)
-(seqOp: (U, V) => U,
-    combOp: (U, U) => U): RDD[(K, U)] = self.withScope {
-  aggregateByKey(zeroValue, defaultPartitioner(self))(seqOp, combOp)
-}
-```
-
-
-
-#### 4.3.3 foldByKey
-
-```scala
-def foldByKey(zeroValue: V)(func: (V, V) => V): RDD[(K, V)] = self.withScope {
-  foldByKey(zeroValue, defaultPartitioner(self))(func)
-}
-```
-
-foldByKey是aggregateByKey的简化版！
-
-​		foldByKey在运算时，分区内和分区间合并的函数都是一样的！
-
-
-
-如果aggregateByKey，分区内和分区间运行的函数一致，且zeroValue和value的类型一致，可以简化使用foldByKey！
-
-
-
-#### 4.3.4  combineByKey
-
-```scala
-
-def combineByKey[C](
-    createCombiner: V => C,
-    mergeValue: (C, V) => C,
-    mergeCombiners: (C, C) => C): RDD[(K, C)] = self.withScope {
-  combineByKeyWithClassTag(createCombiner, mergeValue, mergeCombiners)(null)
-}
-```
-
-
-
-combineByKeyWithClassTag的简化版本，简化在没有提供ClassTag
-
-combineByKey: 是为了向后兼容。兼容foldByKey类型的算子！
-
-
-
-#### 4.3.5 4个算子的区别
-
-```scala
-/*
-	用函数计算zeroValue
-	分区内计算
-	分区间计算
-	
-*/
-rdd.combineByKey(v => v + 10, (zero: Int, v) => zero + v, (zero1: Int, zero2: Int) => zero1 + zero2)
-
-//如果不需要使用函数计算zeroValue，而是直接传入，此时就可以简化为
-
-rdd.aggregateByKey(10)(_ + _, _ + _)
-
-//如果aggregateByKey的分区内和分区间运算函数一致，且zeroValue和value同一类型，此时可以简化为
-
-rdd.foldByKey(0)(_ + _)
-
-// 如果zeroValue为0，可以简化为reduceByKey
-
-rdd.reduceByKey(_ + _)
-
-
-//四个算子本质都调用了，只不过传入的参数进行了不同程度的处理
-// 以上四个算子，都可以在map端聚合！
-combineByKeyWithClassTag(createCombiner, mergeValue, mergeCombiners)(null)
-
-// 根据需要用，常用是reduceByKey
-```
-
-#### 4.3.6 partitionBy
-
-使用指定的分区器对RDD进行重新分区！
-
-
-
-自定义Partitioner，自定义类，继承Partitioner类！实现其中的getPartition()
-
-
-
-#### 4.3.7 mapValues
-
-将K-V类型RDD相同key的所有values经过函数运算后，再和Key组成新的k-v类型的RDD
-
-
-
-#### 4.3.8 groupByKey
-
-根据key进行分组！
-
-
-
-#### 4.3.9 SortByKey
-
-根据key进行排序！ 
-
-​		针对自定义的类型进行排序！可以提供一个隐式的自定义类型的排序器Ordering[T]
-
-
-
-#### 4.3.10 连接
-
-Join:  根据两个RDD key，对value进行交集运算！
-
-
-
-
-
-LeftOuterJoin:  类似 left join，取左侧RDD的全部和右侧key有关联的部分！
-
-RightOuterJoin: 类似 right join，取右侧RDD的全部和左侧key有关联的部分！
-
-FullOuterJoin： 取左右RDD的全部，及有关联的部分！
-
-​		如果关联上，使用Some，如果关联不上使用None标识！
-
-#### 4.3.11 cogroup
-
-将左右两侧RDD中所有相同key的value进行聚合，返回每个key及对应values的集合！
-
-将两侧的RDD根据key进行聚合，返回左右两侧RDD相同的values集合的RDD！
 
 
 
@@ -2105,6 +934,312 @@ B---A  1/2
 
 
 # 6.Flink流处理核心编程实战
+
+## 6.1  基于埋点日志数据的网络流量统计
+
+### 6.1.1  网站总浏览量（PV）的统计
+
+​	衡量网站流量一个最简单的指标，就是网站的页面浏览量（Page View，**PV**）。用户每次打开一个页面便记录1次PV，多次打开同一页面则浏览量累计。
+
+​	一般来说，PV与来访者的数量成正比，但是PV并不直接决定页面的真实来访者数量，如同一个来访者通过不断的刷新页面，也可以制造出非常高的PV。接下来我们就用咱们之前学习的Flink算子来实现PV的统计。
+
+将数据用JavaBean类封装
+
+```java
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserBehavior {
+    private Long userId;
+    private Long itemId;
+    private Integer categoryId;
+    private String behavior;
+    private Long timestamp;
+}
+```
+
+PV实现思路一：WordCount
+
+读数据-->数据按行切分-->每行元素封装进Bean对象对应属性-->过滤访问数据-->每一次访问封装成tuple（页面，1）类型-->按照页面分类-->将访问次数求和
+
+```java
+//创建环境部分省略，创建流处理环境
+        env.readTextFile("input/UserBehavior.csv")
+                .map(line ->{
+                    String[] split = line.split(",");
+                    return new UserBehavior( Long.valueOf(split[0]),
+                            Long.valueOf(split[1]),
+                            Integer.valueOf(split[2]),
+                            split[3],
+                            Long.valueOf(split[4]));
+                }).filter(behavior -> "pv".equals(behavior.getBehavior()))
+                .map(behavior -> Tuple2.of("PV",1L)).returns(Types.TUPLE(Types.STRING,Types.LONG))
+                .keyBy(value -> value.f0)
+                .sum(1);
+```
+
+pv实现思路 2: process
+
+不同之处是在过滤之后调用process算子
+
+```java
+   .keyBy(UserBehavior::getBehavior)
+          .process(new KeyedProcessFunction<String, UserBehavior, Long>() {
+              long count = 0;
+
+              @Override
+              public void processElement(UserBehavior value, Context ctx, Collector<Long> out) throws Exception {
+                  count++;
+                  out.collect(count);
+              }
+```
+
+### 6.1.2   网站独立访客数（UV）的统计  
+
+上一个案例中，我们统计的是所有用户对页面的所有浏览行为，也就是说，同一用户的浏览行为会被重复统计。而在实际应用中，我们往往还会关注，到底有多少不同的用户访问了网站，所以另外一个统计流量的重要指标是网站的独立访客数（Unique Visitor，UV）
+
+实现思路：在PV的基础上对每个数据的userId进行去重，实现方法是将其存入一个hash-set，依据hash-set的大小来确定用户数。
+
+```java
+ .process(new KeyedProcessFunction<String, Tuple2<String, Long>, Integer>() {
+              HashSet<Long> userIds = new HashSet<>();
+              @Override
+              public void processElement(Tuple2<String, Long> value, Context ctx, Collector<Integer> out) throws Exception {
+                  userIds.add(value.f1);
+                  out.collect(userIds.size());
+              }
+```
+
+## 6.2   市场营销商业指标统计分析  
+
+对于电商企业来说，一般会通过各种不同的渠道对自己的APP进行市场推广，而这些渠道的统计数据（比如，不同网站上广告链接的点击量、APP下载量）就成了市场营销的重要商业指标。
+
+### 6.2.1   APP市场推广统计 - 分渠道  
+
+封装数据的Java Bean类：
+
+```java
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+//Lombok 是一种 Java™ 实用工具，可用来帮助开发人员消除 Java 的冗长，尤其是对于简单的 Java 对象（POJO）。它通过注解实现这一目的。
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class MarketingUserBehavior {
+    private Long userId;
+    private String behavior;
+    private String channel;
+    private Long timestamp;
+}
+```
+
+具体实现代码:
+
+```java
+//创建上下文
+//添加source
+env.
+    addSource(new AppMarketingDataSource())
+    .map(behavior ->Tuple2.of(behavior.getChannel()+"_"+behavior.getBehavior(),1L))
+    .keyBy(t->t.f0)
+    .sum(1)
+    .print();
+env.execute();
+public static class AppMarketingDataSource extends RichSourceFunction<MarketingUserBehavior> {
+        boolean canRun = true;
+        Random random = new Random();
+        List<String> channels = Arrays.asList("huawwei", "xiaomi", "apple", "baidu", "qq", "oppo", "vivo");
+        List<String> behaviors = Arrays.asList("download", "install", "update", "uninstall");
+
+        @Override
+        public void run(SourceContext<MarketingUserBehavior> ctx) throws Exception {
+            while (canRun) {
+                MarketingUserBehavior marketingUserBehavior = new MarketingUserBehavior(
+                  (long) random.nextInt(1000000),
+                  behaviors.get(random.nextInt(behaviors.size())),
+                  channels.get(random.nextInt(channels.size())),
+                  System.currentTimeMillis());
+                ctx.collect(marketingUserBehavior);
+                Thread.sleep(2000);
+            }
+        }
+
+        @Override
+        public void cancel() {
+            canRun = false;
+        }
+
+```
+
+### 6.2.2   APP市场推广统计 - 不分渠道  
+
+```java
+env
+  .addSource(new AppMarketingDataSource())
+  .map(behavior -> Tuple2.of(behavior.getBehavior(), 1L))
+  .returns(Types.TUPLE(Types.STRING, Types.LONG))
+  .keyBy(t -> t.f0)
+  .sum(1)
+  .print();
+```
+
+## 6.3 各省份页面广告点击量实时统计
+
+更加具体的应用是，我们可以根据用户的地理位置进行划分，从而总结出不同省份用户对不同广告的偏好，这样更有助于广告的精准投放。
+
+封装数据的Java Bean:
+
+```java
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class AdsClickLog {
+    private Long userId;
+    private Long adId;
+    private String province;
+    private String city;
+    private Long timestamp;
+}
+```
+
+  具体实现代码 :
+
+```java
+env
+          .readTextFile("input/AdClickLog.csv")
+          .map(line -> {
+              String[] datas = line.split(",");
+              return new AdsClickLog(
+                Long.valueOf(datas[0]),
+                Long.valueOf(datas[1]),
+                datas[2],
+                datas[3],
+                Long.valueOf(datas[4]));
+          })
+          .map(log -> Tuple2.of(Tuple2.of(log.getProvince(), log.getAdId()), 1L))
+          .returns(TUPLE(TUPLE(STRING, LONG), LONG))
+          .keyBy(new KeySelector<Tuple2<Tuple2<String, Long>, Long>, Tuple2<String, Long>>() {
+              @Override
+              public Tuple2<String, Long> getKey(Tuple2<Tuple2<String, Long>, Long> value) throws Exception {
+                  return value.f0;
+              }
+          })
+          .sum(1)
+          .print("省份-广告");
+
+        env.execute();
+```
+
+## 6.4   订单支付实时监控  
+
+为了正确控制业务流程，也为了增加用户的支付意愿，网站一般会设置一个支付失效时间，超过一段时间不支付的订单就会被取消。另外，对于订单的支付，我们还应保证用户支付的正确性，这可以通过第三方支付平台的交易数据来做一个实时对账。
+
+**需求:** **来自两条流的订单交易匹配**
+
+​	对于订单支付事件，用户支付完成其实并不算完，我们还得确认平台账户上是否到账了。而往往这会来自不同的日志信息，所以我们要同时读入两条流的数据来做合并处理。
+
+  Java  Bean  类的准备 :
+
+```java
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class OrderEvent {
+    private Long orderId;
+    private String eventType;
+    private String txId;
+    private Long eventTime;
+}
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class TxEvent {
+    private String txId;
+    private String payChannel;
+    private Long eventTime;
+}
+```
+
+  具体实现:
+
+分别读取两个流： SingleOutputStreamOperator
+
+```java
+        // 1. 读取Order流
+        SingleOutputStreamOperator<OrderEvent> orderEventDS = env
+          .readTextFile("input/OrderLog.csv")
+          .map(line -> {
+              String[] datas = line.split(",");
+              return new OrderEvent(
+                Long.valueOf(datas[0]),
+                datas[1],
+                datas[2],
+                Long.valueOf(datas[3]));
+
+          });
+        // 2. 读取交易流
+        SingleOutputStreamOperator<TxEvent> txDS = env
+          .readTextFile("input/ReceiptLog.csv")
+          .map(line -> {
+              String[] datas = line.split(",");
+              return new TxEvent(datas[0], datas[1], Long.valueOf(datas[2]));
+          });
+```
+
+将两个流连接：
+
+```java
+ // 3. 两个流连接在一起
+ConnectedStreams<OrderEvent, TxEvent> orderAndTx = orderEventDS.connect(txDS);
+ // 4. 因为不同的数据流到达的先后顺序不一致，所以需要匹配对账信息.  输出表示对账成功与否
+orderAndTx
+.keyBy("txId", "txId")
+    .process(new CoProcessFunction<OrderEvent, TxEvent, String>() {
+              // 存 txId -> OrderEvent
+              Map<String, OrderEvent> orderMap = new HashMap<>();
+              // 存储 txId -> TxEvent
+              Map<String, TxEvent> txMap = new HashMap<>();
+              @Override
+              public void processElement1(OrderEvent value, Context ctx, Collector<String> out) throws Exception {
+                  // 获取交易信息
+                  if (txMap.containsKey(value.getTxId())) {
+                      out.collect("订单: " + value + " 对账成功");
+                      txMap.remove(value.getTxId());
+                  } else {
+                      orderMap.put(value.getTxId(), value);
+                  }
+              }
+                      @Override
+              public void processElement2(TxEvent value, Context ctx, Collector<String> out) throws Exception {
+                  // 获取订单信息
+                  if (orderMap.containsKey(value.getTxId())) {
+                      OrderEvent orderEvent = orderMap.get(value.getTxId());
+                      out.collect("订单: " + orderEvent + " 对账成功");
+                      orderMap.remove(value.getTxId());
+                  } else {
+                      txMap.put(value.getTxId(), value);
+                  }
+              }
+          })
+          .print();
+        env.execute();
+    })
+```
 
 
 
