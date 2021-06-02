@@ -1245,6 +1245,159 @@ orderAndTx
 
 # 7. Flink流处理高阶编程
 
+所谓的高阶部分内容，其实就是Flink与其他计算框架不相同且占优势的地方，比如Window和Exactly-Once。
+
+## 7.1   Flink的window机制  
+
+### 7.1.1   窗口概述  
+
+​	在流处理中，数据是连续不断的，因此不可能等到所有数据到了才开始处理。可以每来一个消息就处理一次，但是有时需要做一些聚合处理，例如：在过去的1分钟内有多少用户点击了我们的网页。在这种情况下，必须定义一个窗口，用来收集最近一分钟内的数据，并对这个窗口内的数据进行计算。
+
+​	流式计算是一种被设计用于**处理无限数据集**的数据处理引擎，而无限数据集是指一种不断增长的本质上无限的数据集，而Window窗口是一种切割无限数据为有限块进行处理的手段。
+
+​	在Flink中, 窗口(window)是处理无界流的核心. 窗口把流切割成有限大小的多个"存储桶"(bucket), 在这些桶上进行计算。
+
+### 7.1.2 **窗口的分类**
+
+  窗口分为 2  类:   
+
+1. 基于时间的窗口(时间驱动)
+
+2. 基于元素个数的(数据驱动)
+
+####   7.1.2.1   基于时间的窗口 
+
+时间窗口包含一个开始时间戳(包括)和结束时间戳(不包括), 这两个时间戳一起限制了窗口的尺寸.
+
+​	在代码中, Flink使用Time Window这个类来表示基于时间的窗口.  提供了key查询开始时间戳和结束时间戳的方法, 还提供了针对给定的窗口获取它允许的最大时间差的方法(maxTimestamp())
+
+​	 时间窗口又分 4 种: 
+
+#####   滚动窗口( Tumbling Windows  )  
+
+​	滚动窗口固定大小, 不会重叠也没有缝隙。如果指定一个长度为5分钟的滚动窗口, 当前窗口开始计算, 每5分钟启动一个新的窗口.
+
+​	滚动窗口能将数据流切分成不重叠的窗口，**每一个事件只能属于一个窗口**。
+
+```java
+.window(TumblingProcessingTimeWindows.of(Time.seconds(8))) // 添加滚动窗口
+```
+
+说明:
+
+1. 时间间隔可以通过: 
+
+   ```java
+   Time.milliseconds(x)
+   Time.seconds(x)
+   Time.minutes(x)
+   ```
+
+   等等来指定。
+
+2. 我们传递给window函数的对象叫**窗口分配器**。
+
+#####   滑动窗口(  Sliding Windows  )  
+
+​	与滚动窗口一样, 滑动窗口也有固定长度. 另外一个参数叫滑动步长, 用来控制滑动窗口启动的频率.
+
+​	所以, 如果滑动步长小于窗口长度, 滑动窗口会重叠. 这种情况下, 一个元素可能会被分配到多个窗口中
+
+```java
+.window(SlidingProcessingTimeWindows.of(Time.seconds(10), Time.seconds(5))) // 添加滚动窗
+```
+
+#####   会话窗口(  Session Windows  )  
+
+​	会话窗口分配器会根据活动元素进行分组. 不会有重叠, 与滚动窗口和滑动窗口相比, 会话窗口没有固定的开启和关闭时间.
+
+​	如果会话窗口有一段时间没有收到数据, 会话窗口会自动关闭, 这段没有收到数据的时间就是会话窗口的gap(间隔)
+
+​	我们可以配置静态的gap, 也可以通过一个gap extractor 函数来定义gap的长度. 当时间超过了这个gap, 当前的会话窗口就会关闭, 后序的元素会被分配到一个新的会话窗口
+
+**示例代码:** 
+
+1. 静态gap
+
+```java
+.window(ProcessingTimeSessionWindows.withGap(Time.seconds(10)))
+```
+
+
+
+2. 动态gap
+
+```java
+.window(ProcessingTimeSessionWindows.withDynamicGap(new SessionWindowTimeGapExtractor<Tuple2<String, Long>>() {
+    @Override
+    public long extract(Tuple2<String, Long> element) { // 返回 gap值, 单位毫秒
+        return element.f0.length() * 1000;//依据数据流的元素的第一个值的长度来返回gap
+    }
+}))
+```
+
+ 创建原理:  
+
+​	因为会话窗口没有固定的开启和关闭时间, 所以会话窗口的创建和关闭与滚动,滑动窗口不同. 在Flink内部, 每到达一个新的元素都会创建一个新的会话窗口, 如果这些窗口彼此相距比较定义的gap小, 则会对他们进行合并. 为了能够合并, 会话窗口算子需要合并触发器和合并窗口函数: Reduce Function, Aggregate Function, or ProcessWindowFunction 
+
+##### 全局窗口(  Global Windows  )  
+
+​	全局窗口分配器会分配相同key的所有元素进入同一个 Global window. 这种窗口机制只有**指定自定义的触发器**时才有用. 否则, 不会做任务计算, 因为这种窗口没有能够处理聚集在一起元素的结束点.
+
+  示例代码:
+
+```java
+.window(GlobalWindows.create());
+```
+
+#### **7.1.2.1**   基于元素个数的窗口  
+
+  按照指定的数据条数生成一个Window，与时间无关
+
+**分2类:** 
+
+#####  滚动窗口 
+
+​	默认的Count Window是一个滚动窗口，只需要指定窗口大小即可，当元素数量达到窗口大小时，就会触发窗口的执行。
+
+实例代码
+
+```java
+.countWindow(3)
+```
+
+​	说明:哪个窗口先达到3个元素, 哪个窗口就关闭. 不影响其他的窗口.
+
+##### 滑动窗口
+
+​	滑动窗口和滚动窗口的函数名是完全一致的，只是在传参数时需要传入两个参数，一个是window_size，一个是sliding_size。下面代码中的sliding_size设置为了2，也就是说，每收到两个相同key的数据就计算一次，每一次计算的window范围**最多**是3个元素。
+
+ 实例代码 
+
+```java
+.countWindow(3, 2)
+```
+
+### 7.1.3  Window   Function 
+
+​	前面指定了窗口的分配器, 接着需要指定如何计算, 由*window function*来负责. 一旦窗口关闭,  *window function* 去计算处理窗口中的每个元素.
+
+​	*window function* 可以是Reduce Function,
+
+​	Aggregate Function,
+
+​	or ProcessWindowFunction
+
+​	中的任意一种.
+
+​	Reduce Function,Aggregate Function更加高效, 原因就是Flink可以对到来的元素进行**增量聚合** **.** 		
+
+​	ProcessWindowFunction 可以得到一个包含这个窗口中所有元素的迭代器, 以及元素所属窗口的元数据信息.
+
+​	ProcessWindowFunction不能被高效执行的原因是Flink在执行这个函数之前, 需要在**内部缓存这个窗口上所有的元素**。
+
+
+
 # 8.Flink流处理高阶编程实战
 
 # 9.Flink CEP编程
