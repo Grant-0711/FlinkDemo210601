@@ -1396,7 +1396,197 @@ orderAndTx
 
 ​	ProcessWindowFunction不能被高效执行的原因是Flink在执行这个函数之前, 需要在**内部缓存这个窗口上所有的元素**。
 
+Reduce Function(增量聚合函数)
 
+```java
+.window(TumblingProcessingTimeWindows.of(Time.seconds(5)))
+    .reduce(new ReduceFunction<Tuple2<String, Long> value1, Tuple2<String, Long> value2) throw Exception{
+    sout(value1 + " " + value2);
+     // value1是上次聚合的结果. 所以遇到每个窗口的第一个元素时, 这个函数不会进来
+    return Tuple2.of(value1.f0, value1.f1 + value2.f1);
+}
+```
+
+Aggregate Function(增量聚合函数)
+
+```java
+.window(TumblingProcessingTimeWindows.of(Time.seconds(5)))
+    .aggregate(new AggregateFunction<Tuple2<String, Long>, Long, Long>(){
+	    // 创建累加器: 初始化中间值
+    @Override
+        public Long createAccumulator() {
+            sout("createAccumulator");
+            return 0L;
+        }
+           // 累加器操作
+    @Override
+    public Long add(Tuple2<String, Long> value, Long accumulator) {
+        System.out.println("add");
+        return accumulator + value.f1;
+    }
+
+    // 获取结果
+    @Override
+    public Long getResult(Long accumulator) {
+        System.out.println("getResult");
+        return accumulator;
+    }
+
+    // 累加器的合并: 只有会话窗口才会调用
+    @Override
+    public Long merge(Long a, Long b) {
+        System.out.println("merge");
+        return a + b;
+    }
+    })
+```
+
+ProcessWindowFunction(全窗口函数)
+
+```java
+.process(new ProcessWindowFunction<Tuple2<String, Long>, Tuple2<String, Long>, String, TimeWindow>() {
+    // 参数1: key 参数2: 上下文对象 参数3: 这个窗口内所有的元素 参数4: 收集器, 用于向下游传递数据
+    @Override
+    public void process(String key,
+                        Context context,
+                        Iterable<Tuple2<String, Long>> elements,
+                        Collector<Tuple2<String, Long>> out) throws Exception {
+        sout(context.window().getStart());
+        long sum = 0L;
+        for(Tuple2<String, Long> t : elements) {
+        sum += t.f1;
+        }
+        out.collect(Tuple2.of(key, sum));}}}
+```
+
+## 7.2   Keyed vs Non-Keyed Windows  
+
+​	在用window前首先需要确认应该是在key By后的流上用, 还是在没有key By的流上使用.
+
+​	在keyed streams上使用窗口, 窗口计算被并行的运用在多个task上, 可以认为每个task都有自己单独窗口. 正如前面的代码所示.
+
+​	在non-keyed stream上使用窗口, 流的并行度只能是1, 所有的窗口逻辑只能在一个单独的task上执行.
+
+​	需要注意的是: 非key分区的流, 即使把并行度设置为大于1 的数, 窗口也只能在某个分区上使用.
+
+### 7.3 Flink中的时间语义与Water Mark
+
+#### 7.3.1 Flink中的时间语义
+
+​	在Flink的流式操作中, 会涉及不同的时间概念.
+
+##### 7.3.1.1 处理时间(process time)
+
+​	处理时间是指的执行操作的各个设备的时间
+​	对于运行在处理时间上的流程序, 所有的基于时间的操作(比如时间窗口)都是使用的设备时钟.比如, 一个长度为1个小时的窗口将会包含设备时钟表示的1个小时内所有的数据.  假设应用程序在 9:15am分启动, 第1个小时窗口将会包含9:15am到10:00am所有的数据, 然后下个窗口是10:00am-11:00am, 等等
+​	处理时间是最简单时间语义, 数据流和设备之间不需要做任何的协调. 他提供了最好的性能和最低的延迟. 但是, 在分布式和异步的环境下, 处理时间没有办法保证确定性, 容易受到数据传递速度的影响: 事件的延迟和乱序
+​	在使用窗口的时候, 如果使用处理时间, 就指定时间分配器为处理时间分配器
+
+##### 7.3.1.2事件时间(event time)
+
+​	事件时间是指的这个事件发生的时间.
+​	在event进入Flink之前, 通常被嵌入到了event中, 一般作为这个event的时间戳存在.
+​	在事件时间体系中, 时间的进度依赖于数据本身, 和任何设备的时间无关.  事件时间程序必须制定如何产生Event Time Watermarks(水印) . **在事件时间体系中, 水印是表示时间进度的标志(作用就相当于现实时间的时钟).**
+​	在理想情况下，不管事件时间何时到达或者他们的到达的顺序如何, 事件时间处理将产生完全一致且确定的结果. 事件时间处理会在等待无序事件(迟到事件)时产生一定的延迟。由于只能等待有限的时间，因此这限制了确定性事件时间应用程序的可使用性。
+
+​	在使用窗口的时候, 如果使用事件时间, 就指定时间分配器为事件时间分配器
+注意: 
+​	**在1.12之前默认的时间语义是处理时间, 从1.12开始, Flink内部已经把默认的语义改成了事件时间**
+
+#### 7.3.2哪种时间更重要
+
+#### 7.3.3 Flink中的 Water Mark
+
+​	支持event time的流式处理框架需要一种能够测量event time 进度的方式.
+​	**在Flink中去测量事件时间的进度的机制就是watermark(水印).** watermark作为数据流的一部分在流动, 并且携带一个时间戳t. 
+​	一个Watermark(t)表示在这个流里面事件时间已经到了时间t, 意味着此时, 流中不应该存在这样的数据: 他的时间戳t2<=t (时间比较旧或者等于时间戳)
+
+**有序流中的水印**
+	当事件是有序的(按照他们自己的时间戳来看), watermark是流中一个简单的周期性的标记。
+
+ **乱序流中的水印**
+	当事件是乱序的, 则watermark对于这些乱序的流来说至关重要.
+	通常情况下, 水印是一种标记, 是流中的一个点, 所有在这个时间戳(水印中的时间戳)前的数据应该已经全部到达. 一旦水印到达了算子, 则这个算子会提高他内部的时钟的值为这个水印的值.
+
+#### 7.3.4 Flink中如何产生水印
+
+​	在 Flink 中， 水印由应用程序开发人员生成。完美的水印永远不会错：时间戳小于水印标记时间的事件不会再出现。在特殊情况下（例如非乱序事件流），最近一次事件的时间戳就可能是完美的水印。
+​	启发式水印则相反，它只估计时间，因此有可能出错， 即迟到的事件 （其时间戳小于水印标记时间）晚于水印出现。针对启发式水印， Flink 提供了处理迟到元素的机制。
+​	设定水印通常需要用到领域知识。举例来说，如果知道事件的迟到时间不会超过 5 秒， 就可以将水印标记时间设为收到的最大时间戳减去 5 秒。 另 一种做法是，采用一个 Flink 作业监控事件流，学习事件的迟到规律，并以此构建水印生成模型。
+
+#### 7.3.5 Event Time和Water Mark的使用
+
+Flink内置了两个Water Mark生成器:
+
+1. Monotonously Increasing Timestamps(时间戳单调增长:其实就是允许的延迟为0)
+
+```java
+WatermarkStrategy.forMonotonousTimestamps();
+```
+
+2. Fixed Amount of Lateness(允许固定时间的延迟)
+
+```java
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment().setParallelism(1);
+
+        SingleOutputStreamOperator<WaterSensor> stream = env
+          .socketTextStream("hadoop102", 9999)  // 在socket终端只输入毫秒级别的时间戳
+            .map(new MapFunction<String, WaterSensor>(){
+              @Override
+              public WaterSensor map(String value) throws Exception {
+                   String[] datas = value.split(",");
+                  return new WaterSensor(datas[0], Long.valueOf(datas[1]), Integer.valueOf(datas[2]));
+              }
+          });
+        // 创建水印生产策略
+        WatermarkStrategy<WaterSensor> wms = WatermarkStrategy
+            .<WaterSensor>forBoundedOutOfOrderness(Duration.ofSeconds(3))// 最大容忍的延迟时间
+             @Override 
+              public long extractTimestamp(WaterSensor element, long recordTimestamp) {
+                  return element.getTs() * 1000;
+              }
+          });
+            stream
+          .assignTimestampsAndWatermarks(wms) // 指定水印和时间戳
+          .keyBy(WaterSensor: :getId)
+          .window(TumblingEventTimeWindows.of(Time.seconds(5)))
+          .process(new ProcessWindowFunction<WaterSensor, String, String, TimeWindow>() {
+              @Override
+              public void process(String key, Context context, Iterable<WaterSensor> elements, Collector<String> out) throws Exception {
+                  String msg = "当前key: " + key
+                    + "窗口: [" + context.window().getStart() / 1000 + "," + context.window().getEnd()/1000 + ") 一共有 "
+                    + elements.spliterator().estimateSize() + "条数据 ";
+                  out.collect(msg);
+              }
+          })
+          .print();
+        env.execute();
+```
+
+#### 7.3.6自定义Watermark Strategy
+
+​	有2种风格的Water Mark生产方式: periodic(周期性) and punctuated(间歇性).都需要继承接口: Watermark Generator
+
+周期性:
+
+```java
+       // 创建水印生产策略
+        WatermarkStrategy<WaterSensor> myWms = new WatermarkStrategy<WaterSensor>() {
+            @Override
+            public WatermarkGenerator<WaterSensor> createWatermarkGenerator(WatermarkGeneratorSupplier.Context context) {
+                System.out.println("createWatermarkGenerator ....");
+                return new MyPeriod(3);
+            }
+        }.withTimestampAssigner(new SerializableTimestampAssigner<WaterSensor>() {
+            @Override
+            public long extractTimestamp(WaterSensor element, long recordTimestamp) {
+                System.out.println("recordTimestamp  " + recordTimestamp);
+                return element.getTs() * 1000;
+
+```
+
+间歇性:
 
 # 8.Flink流处理高阶编程实战
 
