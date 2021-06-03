@@ -1588,6 +1588,17 @@ WatermarkStrategy.forMonotonousTimestamps();
 
 间歇性:
 
+
+
+### 7.8 Flink状态编程
+
+有状态的计算是流处理框架要实现的重要功能，因为稍复杂的流处理场景都需要记录状态，然后在新流入数据的基础上不断更新状态。
+
+Spark Streaming在状态管理这块做的不好, 很多时候需要借助于外部存储(例如Redis)来手动管理状态, 增加了编程的难度。
+Flink的状态管理是它的优势之一。
+
+
+
 # 8.Flink流处理高阶编程实战
 
 # 9.Flink CEP编程
