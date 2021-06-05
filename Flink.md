@@ -1655,7 +1655,11 @@ b) Operator State(算子状态)
 | **状态分配**       | 一个算子的子任务对应一个状态                                 | 一个Key对应一个State: 一个算子会处理多个Key, 则访问相应的多个State |
 | **创建和访问方式** | 实现CheckpointedFunction或ListCheckpointed(已经过时)接口     | 重写RichFunction, 通过里面的RuntimeContext访问               |
 | **横向扩展**       | 并发改变时有多重重写分配方式可选: 均匀分配和合并后每个得到全量 | 并发改变, State随着Key在实例间迁移                           |
-| **支持的数据结构** | ListState和BroadCastState                                    | Value State, List State,Map State， Reduce State, Aggregating State |
+| **支持的数据结构** | List State和Broadcast State                                  | Value State, List State,Map State， Reduce State, Aggregating State |
+
+### 7.8.5 算子状态的使用
+
+​	Operator State可以用在所有算子上，每个算子子任务或者说每个算子实例共享一个状态，流入这个算子子任务的数据可以访问和更新这个状态。
 
 # 8.Flink流处理高阶编程实战
 
