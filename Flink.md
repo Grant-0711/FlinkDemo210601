@@ -1343,7 +1343,7 @@ orderAndTx
 
 ​	 时间窗口又分 4 种: 
 
-#####   滚动窗口( Tumbling Windows  )  
+#####   滚动窗口( Tumbling  )  
 
 ​	滚动窗口固定大小, 不会重叠也没有缝隙。如果指定一个长度为5分钟的滚动窗口, 当前窗口开始计算, 每5分钟启动一个新的窗口.
 
@@ -1367,7 +1367,7 @@ orderAndTx
 
 2. 我们传递给window函数的对象叫**窗口分配器**。
 
-#####   滑动窗口(  Sliding Windows  )  
+#####   滑动窗口(  Sliding )  
 
 ​	与滚动窗口一样, 滑动窗口也有固定长度. 另外一个参数叫滑动步长, 用来控制滑动窗口启动的频率.
 
@@ -1377,7 +1377,7 @@ orderAndTx
 .window(SlidingProcessingTimeWindows.of(Time.seconds(10), Time.seconds(5))) // 添加滚动窗
 ```
 
-#####   会话窗口(  Session Windows  )  
+#####   会话窗口(  Session   )  
 
 ​	会话窗口分配器会根据活动元素进行分组. 不会有重叠, 与滚动窗口和滑动窗口相比, 会话窗口没有固定的开启和关闭时间.
 
@@ -1410,7 +1410,7 @@ orderAndTx
 
 ​	因为会话窗口没有固定的开启和关闭时间, 所以会话窗口的创建和关闭与滚动,滑动窗口不同. 在Flink内部, 每到达一个新的元素都会创建一个新的会话窗口, 如果这些窗口彼此相距比较定义的gap小, 则会对他们进行合并. 为了能够合并, 会话窗口算子需要合并触发器和合并窗口函数: Reduce Function, Aggregate Function, or ProcessWindowFunction 
 
-##### 全局窗口(  Global Windows  )  
+##### 全局窗口(  Global   )  
 
 ​	全局窗口分配器会分配相同key的所有元素进入同一个 Global window. 这种窗口机制只有**指定自定义的触发器**时才有用. 否则, 不会做任务计算, 因为这种窗口没有能够处理聚集在一起元素的结束点.
 
@@ -1873,6 +1873,172 @@ public class Flink01_State_Operator_3 {
           .print();
 
         env.execute();
+```
+
+
+
+### 7.8.7 键控状态的使用
+
+键控状态是根据输入数据流中定义的key来维护和访问的。
+
+每一个key维护一个状态实例，相同key的数据分到同一个子任务中，这个子任务会维护和处理对应的状态。
+
+**因此，相同key的所有元素都会访问相同的状态。**
+
+**数据结构：**
+
+类似于一个分布式的key-value map结构，只能用于keyed stream（keyBy算子处理之后的）
+
+**键控状态支持的数据类型**：
+
+  **ValueState<T>**
+保存单个值. 每个有key有一个状态值.  设置使用 update(T), 获取使用 T value()
+
+  **ListState<T>:**
+保存元素列表.  添加元素: add(T)  addAll(List<T>)
+获取元素: Iterable<T> get()
+覆盖所有元素: update(List<T>)
+
+  **ReducingState<T>:** 
+存储单个值, 表示把所有元素的聚合结果添加到状态中.  与ListState类似, 但是当使用add(T)的时候ReducingState会使用指定的ReduceFunction进行聚合.
+
+  **AggregatingState<IN, OUT>:** 
+存储单个值. 与ReducingState类似, 都是进行聚合. 不同的是, AggregatingState的聚合的结果和元素类型可以不一样.
+
+  **MapState<UK, UV>:** 
+存储键值对列表. 
+添加键值对:  put(UK, UV) or putAll(Map<UK, UV>)
+根据key获取值: get(UK)
+获取所有: entries(), keys() and values()
+检测是否为空: isEmpty()
+
+**案例1:ValueState**
+
+流程：获取上下文----->设置并行度----->获取流----->map操作元素，封装成POJO----->keyBy操作，让相同的传感器数据流入同一个子任务----->process操作，其中传入KeyedProcessFunction，重写open 和 processElement方法，拥有一个状态属性：对应state----->其中open是根据运行时上下文获取对应类型的键控状态，其中调用get对应State方法时要传入对应StateDescriptor----->processElement方法是对获取的元素的状态进行对应操作：对应state.add/对应state.update 方法
+
+```java
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.util.Collector;
+public class Flink02_State_Keyed_Value {
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment
+          .getExecutionEnvironment()
+          .setParallelism(3);
+        env
+          .socketTextStream("hadoop102", 9999)
+          .map(value -> {
+              String[] datas = value.split(",");
+              return new WaterSensor(datas[0], Long.valueOf(datas[1]), Integer.valueOf(datas[2]));
+
+          })
+          .keyBy(WaterSensor::getId)
+          .process(new KeyedProcessFunction<String, WaterSensor, String>() {
+              private ValueState<Integer> state;
+              @Override
+              public void open(Configuration parameters) throws Exception {
+                  state = getRuntimeContext().getState(new ValueStateDescriptor<Integer>("state", Integer.class));
+              }
+
+              @Override
+              public void processElement(WaterSensor value, Context ctx, Collector<String> out) throws Exception {
+                  Integer lastVc = state.value() == null ? 0 : state.value();
+                  if (Math.abs(value.getVc() - lastVc) >= 10) {
+                      out.collect(value.getId() + " 红色警报!!!");
+                  }
+                  state.update(value.getVc());
+              }
+          })
+          .print();
+        env.execute();
+
+```
+
+
+
+**案例2:ListState**
+
+针对每个传感器输出最高的3个水位值
+
+流程：获取上下文----->设置并行度----->获取流----->map操作元素，封装成POJO----->keyBy操作，让相同的传感器数据流入同一个子任务----->process操作，其中传入KeyedProcessFunction，重写open 和 processElement方法，拥有一个状态属性：对应state----->其中open是根据运行时上下文获取对应类型的键控状态，其中调用get对应State方法时要传入对应StateDescriptor----->processElement方法是对获取的元素的状态进行对应操作：对应state.add/对应state.update 方法
+
+```java
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.util.Collector;
+
+import java.util.ArrayList;
+import java.util.List;
+public class Flink02_State_Keyed_ListState {
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment
+          .getExecutionEnvironment()
+          .setParallelism(3);
+        env
+          .socketTextStream("hadoop102", 9999)
+          .map(value -> {
+              String[] datas = value.split(",");
+              return new WaterSensor(datas[0], Long.valueOf(datas[1]), Integer.valueOf(datas[2]));
+
+          })
+          .keyBy(WaterSensor::getId)
+          .process(new KeyedProcessFunction<String, WaterSensor, List<Integer>>() {
+              private ListState<Integer> vcState;
+
+              @Override
+              public void open(Configuration parameters) throws Exception {
+                  vcState = getRuntimeContext().getListState(new ListStateDescriptor<Integer>("vcState", Integer.class));
+              }
+
+              @Override
+              public void processElement(WaterSensor value, Context ctx, Collector<List<Integer>> out) throws Exception {
+                  vcState.add(value.getVc());
+                  //1. 获取状态中所有水位高度, 并排序
+                  List<Integer> vcs = new ArrayList<>();
+                  for (Integer vc : vcState.get()) {
+                      vcs.add(vc);
+                  }
+                  // 2. 降序排列
+                  vcs.sort((o1, o2) -> o2 - o1);
+                  // 3. 当长度超过3的时候移除最后一个
+                  if (vcs.size() > 3) {
+                      vcs.remove(3);
+                  }
+                  vcState.update(vcs);
+                  out.collect(vcs);
+              }
+          })
+          .print();
+        env.execute();
+```
+
+**案例3:ReducingState**
+
+计算每个传感器的水位和
+
+流程：获取上下文----->设置并行度----->获取流----->map操作元素，封装成POJO----->keyBy操作，让相同的传感器数据流入同一个子任务----->process操作，其中传入KeyedProcessFunction，重写open 和 processElement方法，拥有一个状态属性：对应state----->其中open是根据运行时上下文获取对应类型的键控状态，其中调用get对应State方法时要传入对应StateDescriptor----->processElement方法是对获取的元素的状态进行对应操作：对应state.add/对应state.update 方法
+
+```java
+.process(new KeyedProcessFunction<String, WaterSensor, Integer>() {
+    private ReducingState<Integer> sumVcState;
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        sumVcState = this
+          .getRuntimeContext()
+          .getReducingState(new ReducingStateDescriptor<Integer>("sumVcState", Integer::sum, Integer.class));
+    }
+
+    @Override
+    public void processElement(WaterSensor value, Context ctx, Collector<Integer> out) throws Exception {
+        sumVcState.add(value.getVc());
+        out.collect(sumVcState.get());
+
 ```
 
 
