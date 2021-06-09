@@ -346,7 +346,77 @@ get /flink-standalone/cluster_grantu/leader/rest_server_lock
 
 
 
-## 5.行动算子
+# 5. Flink流处理核心编程
+
+### 5.3.2 flatMap
+
+（可以替换map和filter）
+
+作用 ：消费一个元素并产生零个或多个元素
+
+参数 ： FlatMapFunction 实现类
+
+返回 ：DataStream → DataStream
+
+示例
+匿名内部类写法
+// 新的流存储每个元素的平方和3次方
+env
+  .fromElements(1, 2, 3, 4, 5)
+  .flatMap(new FlatMapFunction<Integer, Integer>() {
+      @Override
+      public void flatMap(Integer value, Collector<Integer> out) throws Exception {
+          out.collect(value * value);
+          out.collect(value * value * value);
+      }
+  })
+  .print();
+Lambda表达式写法
+env
+  .fromElements(1, 2, 3, 4, 5)
+  .flatMap((Integer value, Collector<Integer> out) -> {
+      out.collect(value * value);
+      out.collect(value * value * value);
+  }).returns(Types.INT)
+  .print();
+说明: 在使用Lambda表达式表达式的时候, 由于泛型擦除的存在, 在运行的时候无法获取泛型的具体类型, 全部当做Object来处理, 及其低效, 所以Flink要求当参数中有泛型的时候, 必须明确指定泛型的类型.
+
+
+
+### 5.3.4 keyBy
+
+作用
+把流中的数据分到不同的分区(并行度)中.具有相同key的元素会分到同一个分区中.一个分区中可以有多重不同的key.
+
+**决定数据进入哪个并行度**
+
+在内部是使用的是key的hash分区来实现的.
+
+参数
+Key选择器函数: interface KeySelector<IN, KEY>
+注意: 什么值不可以作为KeySelector的Key:
+没有覆写hashCode方法的POJO, 而是依赖Object的hashCode. 因为这样分组没有任何的意义: 每个元素都会得到一个独立无二的组.  实际情况是:可以运行, 但是分的组没有意义.
+任何类型的数组
+返回
+	DataStream → KeyedStream
+示例
+匿名内部类写法
+// 奇数分一组, 偶数分一组
+env
+  .fromElements(10, 3, 5, 9, 20, 8)
+  .keyBy(new KeySelector<Integer, String>() {
+      @Override
+      public String getKey(Integer value) throws Exception {
+          return value % 2 == 0 ? "偶数" : "奇数";
+      }
+  })
+  .print();
+env.execute();
+Lambda表达式写法
+env
+  .fromElements(10, 3, 5, 9, 20, 8)
+  .keyBy(value -> value % 2 == 0 ? "偶数" : "奇数")
+  .print();
 
 ### 5.1 区别
 
@@ -1657,9 +1727,153 @@ b) Operator State(算子状态)
 | **横向扩展**       | 并发改变时有多重重写分配方式可选: 均匀分配和合并后每个得到全量 | 并发改变, State随着Key在实例间迁移                           |
 | **支持的数据结构** | List State和Broadcast State                                  | Value State, List State,Map State， Reduce State, Aggregating State |
 
+
+
 ### 7.8.5 算子状态的使用
 
 ​	Operator State可以用在所有算子上，每个算子子任务或者说每个算子实例共享一个状态，流入这个算子子任务的数据可以访问和更新这个状态。
+
+​	**注意：算子子任务之间的状态不能互相访问**
+
+​	应用场景：Source或者Sink等算子上，用来保存流入数据的偏移量或者对输出数据进行缓存，以达到Flink的Exactly-Once 语义。
+
+### 7.8.6 算子状态的数据结构
+
+​	列表状态（List state）
+
+将状态表示为一组数据的列表
+
+​	联合列表状态(Union list state)
+
+和列表状态类似，区别在于发生故障时可以从save point启动程序进行恢复
+
+一种是均匀分配的（List State）,一种是将所有state合并为全量state再分发给每个实例（Union list state）
+
+​	广播状态(Broadcast state)
+
+如果一个算子有多项任务，每一项的状态又都相同，这种情况适合广播状态。
+
+
+
+**案例1: 列表状态**
+
+在map算子中计算数据的个数：
+
+```java
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.runtime.state.FunctionInitializationContext;
+import org.apache.flink.runtime.state.FunctionSnapshotContext;
+import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+
+public class Flink01_State_Operator {
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment
+          .getExecutionEnvironment()
+          .setParallelism(3);
+        env
+          .socketTextStream("hadoop102", 9999)
+          .map(new MyCountMapper())
+          .print();
+
+        env.execute();
+    }
+
+    private static class MyCountMapper implements MapFunction<String, Long>, CheckpointedFunction {
+        private Long count = 0L;
+        private ListState<Long> state;
+
+        @Override
+        public Long map(String value) throws Exception {
+            count++;
+            return count;
+        }
+
+        // 初始化时会调用这个方法，向本地状态中填充数据. 每个子任务调用一次
+        @Override
+        public void initializeState(FunctionInitializationContext context) throws Exception {
+            System.out.println("initializeState...");
+            state = context
+              .getOperatorStateStore()
+              .getListState(new ListStateDescriptor<Long>("state", Long.class));
+            for (Long c : state.get()) {
+                count += c;
+            }
+        }
+
+        // Checkpoint时会调用这个方法，我们要实现具体的snapshot逻辑，比如将哪些本地状态持久化
+        @Override
+        public void snapshotState(FunctionSnapshotContext context) throws Exception {
+            System.out.println("snapshotState...");
+            state.clear();
+            state.add(count);
+        }
+```
+
+
+
+**案例2: 广播状态**
+
+从版本1.5.0开始，Apache Flink具有一种新的状态，称为**广播状态**。
+
+广播状态与其他算子状态的区别是：
+
+1. 它是一个map格式
+
+2. 它只对输入有广播流和无广播流的特定算子可用
+
+3. 这样的算子可以具有不同名称的多个广播状态。
+
+```java
+import org.apache.flink.api.common.state.BroadcastState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.common.state.ReadOnlyBroadcastState;
+import org.apache.flink.streaming.api.datastream.BroadcastStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.co.BroadcastProcessFunction;
+import org.apache.flink.util.Collector;
+public class Flink01_State_Operator_3 {
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment
+          .getExecutionEnvironment()
+          .setParallelism(3);
+        DataStreamSource<String> dataStream = env.socketTextStream("hadoop102", 9999);
+        DataStreamSource<String> controlStream = env.socketTextStream("hadoop102", 8888);
+
+
+        MapStateDescriptor<String, String> stateDescriptor = new MapStateDescriptor<>("state", String.class, String.class);
+        // 广播流
+        BroadcastStream<String> broadcastStream = controlStream.broadcast(stateDescriptor);
+        dataStream
+          .connect(broadcastStream)
+          .process(new BroadcastProcessFunction<String, String, String>() {
+              @Override
+              public void processElement(String value, ReadOnlyContext ctx, Collector<String> out) throws Exception {
+                  // 从广播状态中取值, 不同的值做不同的业务
+                  ReadOnlyBroadcastState<String, String> state = ctx.getBroadcastState(stateDescriptor);
+                  if ("1".equals(state.get("switch"))) {
+                      out.collect("切换到1号配置....");
+                  } else if ("0".equals(state.get("switch"))) {
+                      out.collect("切换到0号配置....");
+                  } else {
+                      out.collect("切换到其他配置....");
+                  }
+              }
+
+              @Override
+              public void processBroadcastElement(String value, Context ctx, Collector<String> out) throws Exception {
+                  BroadcastState<String, String> state = ctx.getBroadcastState(stateDescriptor);
+                  // 把值放入广播状态
+                  state.put("switch", value);
+              }
+          })
+          .print();
+
+        env.execute();
+```
 
 
 
