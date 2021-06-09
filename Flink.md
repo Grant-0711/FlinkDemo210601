@@ -2041,7 +2041,146 @@ public class Flink02_State_Keyed_ListState {
 
 ```
 
+**案例4:AggregatingState**
+计算每个传感器的平均水位
 
+```java
+.process(new KeyedProcessFunction<String, WaterSensor, Double>() {
+
+    private AggregatingState<Integer, Double> avgState;
+
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        AggregatingStateDescriptor<Integer, Tuple2<Integer, Integer>, Double> aggregatingStateDescriptor = new AggregatingStateDescriptor<>("avgState", new AggregateFunction<Integer, Tuple2<Integer, Integer>, Double>() {
+            @Override
+            public Tuple2<Integer, Integer> createAccumulator() {
+                return Tuple2.of(0, 0);
+            }
+
+            @Override
+            public Tuple2<Integer, Integer> add(Integer value, Tuple2<Integer, Integer> accumulator) {
+                return Tuple2.of(accumulator.f0 + value, accumulator.f1 + 1);
+            }
+
+            @Override
+            public Double getResult(Tuple2<Integer, Integer> accumulator) {
+                return accumulator.f0 * 1D / accumulator.f1;
+            }
+
+            @Override
+            public Tuple2<Integer, Integer> merge(Tuple2<Integer, Integer> a, Tuple2<Integer, Integer> b) {
+                return Tuple2.of(a.f0 + b.f0, a.f1 + b.f1);
+            }
+        }, Types.TUPLE(Types.INT, Types.INT));
+        avgState = getRuntimeContext().getAggregatingState(aggregatingStateDescriptor);
+    }
+
+    @Override
+    public void processElement(WaterSensor value, Context ctx, Collector<Double> out) throws Exception {
+        avgState.add(value.getVc());
+        out.collect(avgState.get());
+```
+
+**案例5:MapState**
+
+去重: 去掉重复的水位值. 思路: 把水位值作为MapState的key来实现去重, value随意
+
+```java
+.process(new KeyedProcessFunction<String, WaterSensor, WaterSensor>() {
+    private MapState<Integer, String> mapState;
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        mapState = this
+          .getRuntimeContext()
+          .getMapState(new MapStateDescriptor<Integer, String>("mapState", Integer.class, String.class));
+    }
+    @Override
+    public void processElement(WaterSensor value, Context ctx, Collector<WaterSensor> out) throws Exception {
+        if (!mapState.contains(value.getVc())) {
+            out.collect(value);
+            mapState.put(value.getVc(), "随意");
+```
+
+
+
+### 7.8.8状态后端
+
+每次传入一条数据，有状态的算子任务都会读取和更新状态。由于有效的访问状态对于处理数据的低延迟很重要，因此每个并行任务，子任务都会在本地维护状态来确保快速的状态访问。
+
+状态的访问和存储以及维护由一个可插入的组件决定，叫做状态后端（state backend）
+
+状态后端的主要任务：
+
+本地状态的管理（Taskmanager）
+
+检查点（checkpoint）状态写入远程存储
+
+ **状态后端的分类** 
+
+#### **7.8.8.1 MemoryStateBackend**
+
+内存级别的状态后端(默认), 
+
+存储方式:本地状态存储在TaskManager的内存中, checkpoint 存储在JobManager的内存中.
+特点:快速, 低延迟, 但不稳定
+
+使用场景: 1. 本地测试 2. 几乎无状态的作业(ETL) 3. JobManager不容易挂, 或者挂了影响不大. 4. 不推荐在生产环境下使用
+
+#### **7.8.8.2 FsStateBackend**
+
+存储方式: 本地状态在TaskManager内存, Checkpoint时, 存储在文件系统(hdfs)中
+特点: 拥有内存级别的本地访问速度, 和更好的容错保证
+
+使用场景: 1. 常规使用状态的作业. 例如分钟级别窗口聚合, join等 2. 需要开启HA的作业 3. 可以应用在生产环境中
+
+#### **7.8.8.3 RocksDBStateBackend**
+
+将所有的状态序列化之后, 存入本地的RocksDB数据库中.(一种No Sql数据库, KV形式存储)
+
+存储方式: 1. 本地状态存储在TaskManager的RocksDB数据库中(实际是内存+磁盘) 2. Checkpoint在外部文件系统(hdfs)中.
+
+使用场景: 1. 超大状态的作业, 例如天级的窗口聚合 2. 需要开启HA的作业 3. 对读写状态性能要求不高的作业 4. 可以使用在生产环境
+
+
+
+#### **配置状态后端**
+
+##### **全局配置状态后端**
+
+在flink-conf.yaml文件中设置默认的全局后端
+
+##### **在代码中配置状态后端**
+
+可以在代码中单独为这个Job设置状态后端.
+
+```java
+env.setStateBackend(new MemoryStateBackend());
+env.setStateBackend(new FsStateBackend("hdfs://hadoop162:8020/flink/checkpoints/fs"));
+```
+
+如果要使用RocksDBBackend, 需要先引入依赖:
+
+```xml
+<dependency>
+    <groupId>org.apache.flink</groupId>
+    <artifactId>flink-statebackend-rocksdb_${scala.binary.version}</artifactId>
+    <version>${flink.version}</version>
+</dependency>
+```
+
+```java
+env.setStateBackend(new RocksDBStateBackend("hdfs://hadoop162:8020/flink/checkpoints/rocksdb"));
+```
+
+### 7.9 Flink的容错机制
+
+#### 7.9.1 状态的一致性
+
+Flink的一个重大价值在于，它**既**保证了**exactly-once**，**又**具有**低延迟和高吞吐**的处理能力。
+
+#### 端到端**的状态一致性**
+
+每一个组件都需要保证一致性，端到端的一致性级别取决于所有组件中最弱的组件。
 
 # 8.Flink流处理高阶编程实战
 
