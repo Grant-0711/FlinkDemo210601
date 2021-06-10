@@ -1,4 +1,4 @@
-Flink简介
+# 1. Flink简介
 
 
 
@@ -2807,8 +2807,116 @@ Flink的一个重大价值在于，它**既**保证了**exactly-once**，**又**
 
 #### 7.9.2 Checkpoint原理
 
-Flink具体如何保证exactly-once呢? 它使用一种被称为"检查点"（checkpoint）的特性，在出现故障时将系统重置回正确状态。下面通过简单的类比来解释检查点的作用。
-假设你和两位朋友正在数项链上有多少颗珠子，如下图所示。你捏住珠子，边数边拨，每拨过一颗珠子就给总数加一。你的朋友也这样数他们手中的珠子。当你分神忘记数到哪里时，怎么办呢? 如果项链上有很多珠子，你显然不想从头再数一遍，尤其是当三人的速度不一样却又试图合作的时候，更是如此(比如想记录前一分钟三人一共数了多少颗珠子，回想一下一分钟滚动窗口)。
+Flink使用"检查点"（checkpoint）的特性，在出现故障时将系统重置回正确状态。
+
+**Flink的检查点算法**
+
+checkpoint机制是Flink可靠性的基石，可以保证Flink集群在某个算子因为某些原因(如 异常退出)出现故障时，能够将整个应用流图的状态恢复到故障之前的某一状态，保证应用流图状态的一致性.
+
+**快照的实现算法:** 
+
+a)简单算法--暂停应用, 然后开始做检查点, 再重新恢复应用 
+
+b)Flink的改进Checkpoint算法. Flink的checkpoint机制原理来自"Chandy-Lamport algorithm"算法(分布式快照算)的一种变体: 异步 barrier 快照（asynchronous barrier snapshotting）
+
+每个需要checkpoint的应用在启动时，Flink的JobManager为其创建一个 CheckpointCoordinator，CheckpointCoordinator全权负责本应用的快照制作。
+
+理解Barrier
+流的barrier是Flink的Checkpoint中的一个核心概念. 多个barrier被插入到数据流中, 然后作为数据流的一部分随着数据流动(有点类似于Watermark).这些barrier不会跨越流中的数据.
+
+每个barrier会把数据流分成两部分: 一部分数据进入当前的快照 , 另一部分数据进入下一个快照 . 每个barrier携带着快照的id. barrier 不会暂停数据的流动, 所以非常轻量级.  在流中, 同一时间可以有来源于多个不同快照的多个barrier, 这个意味着可以并发的出现不同的快照.
+
+**Flink的检查点制作过程**
+
+​	第一步: Checkpoint Coordinator 向所有 source 节点 trigger Checkpoint. 然后Source Task会在数据流中安插Checkpoint barrier
+
+​	第二步: source 节点向下游广播 barrier，这个 barrier 就是实现 Chandy-Lamport 分布式快照算法的核心，下游的 task 只有收到所有进来的 barrier 才会执行相应的 Checkpoint(barrier对齐, 但是新版本有一种新的: barrier)
+
+​	第三步: 当 task 完成 state 备份后，会将备份数据的地址（state handle）通知给 Checkpoint coordinator。
+
+​	第四步: 下游的 sink 节点收集齐上游两个 input 的 barrier 之后，会执行本地快照，这里特地展示了 RocksDB incremental Checkpoint 的流程，首先 RocksDB 会全量刷数据到磁盘上，然后 Flink 框架会从中选择没有上传的文件进行持久化备份。
+
+​	第五步: 同样的，sink 节点在完成自己的 Checkpoint 之后，会将 state handle 返回通知 Coordinator。
+
+​	第六步: 最后，当 Checkpoint coordinator 收集齐所有 task 的 state handle，就认为这一次的 Checkpoint 全局完成了，向持久化存储中再备份一个 Checkpoint meta 文件。
+
+
+
+**严格一次语义: barrier对齐** 
+
+在多并行度下, 如果要实现严格一次, 则要执行barrier对齐.
+
+当 job graph 中的每个 operator 接收到 barriers 时，它就会记录下其状态。拥有两个输入流的 Operators（例如 CoProcessFunction）会执行 barrier 对齐（barrier alignment） 以便当前快照能够包含消费两个输入流 barrier 之前（但不超过）的所有 events 而产生的状态。
+
+https://ci.apache.org/projects/flink/flink-docs-release-1.12/fig/stream_aligning.svg
+
+当operator收到数字流的barrier n时, 它就不能处理(但是可以接收)来自该流的任何数据记录，直到它从字母流所有输入接收到 barrier n 为止。否则，它会混合属于快照 n 的记录和属于快照 n + 1 的记录。
+
+接收到 barrier n 的流(数字流)暂时被搁置。从这些流接收的记录入输入缓冲区, 不会被处理。
+
+Checkpoint barrier n之后的数据 123已结到达了算子, 存入到输入缓冲区没有被处理, 只有等到字母流的Checkpoint barrier n到达之后才会开始处理.
+
+一旦最后所有输入流都接收到 barrier n，Operator 就会把缓冲区中 pending 的输出数据发出去，然后把 Checkpoint barrier n 接着往下游发送。这里还会对自身进行快照。
+
+
+
+**至少一次语义: barrier不对齐**
+
+前面介绍了barrier对齐, 如果barrier不对齐会怎么样?  会重复消费, 就是至少一次语义.
+
+假设不对齐, 在字母流的Checkpoint barrier n到达前, 已经处理了1 2 3. 等字母流Checkpoint barrier n到达之后, 会做Checkpoint n.  假设这个时候程序异常错误了, 则重新启动的时候会Checkpoint n之后的数据重新计算. 1 2 3 会被再次被计算, 所以123出现了重复计算.
+
+
+
+### 7.9.3 Save point原理
+
+  Flink 还提供了可以自定义的镜像保存功能，就是保存点（savepoints）
+
+  原则上，创建保存点使用的算法与检查点完全相同，因此保存点可以认为就是具有一些额外元数据的检查点
+
+  Flink不会自动创建保存点，因此用户（或外部调度程序）必须明确地触发创建操作
+
+  保存点是一个强大的功能。除了故障恢复外，保存点可以用于：有计划的手动备份，更新应用程序，版本迁移，暂停和重启应用，等等
+
+### 7.9.4 checkpoint和savepoint的区别
+
+
+
+| Save point                                                   | **Checkpoint**                                               |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| Savepoint是**由命令触发**, 由用户创建和删除                  | Checkpoint被保存在用户指定的外部路径中,   flink **自动触发** |
+| 保存点存储在标准格式存储中，并且可以升级作业版本并可以更改其配置。 | 当作业失败或被取消时，将保留外部存储的检查点。               |
+| 用户必须提供用于还原作业状态的保存点的路径。                 | 用户必须提供用于还原作业状态的检查点的路径。 如果是flink的自动重启, 则flink会自动找到最后一个完整的状态 |
+
+
+
+### 7.9.5 Kafka+Flink+Kafka 实现端到端严格一次
+
+
+
+端到端的状态一致性的实现，需要每一个组件都实现，对于Flink + Kafka的数据管道系统（Kafka进、Kafka出）而言，各组件怎样保证exactly-once语义
+
+  内部 —— 利用checkpoint机制，把状态存盘，发生故障的时候可以恢复，保证部的状态一致性
+
+  source —— Kafka consumer作为source，可以将偏移量保存下来，如果后续任务出现了故障，恢复的时候可以由连接器重置偏移量，重新消费数据，保证一致性
+
+sink —— Kafka producer作为sink，采用两阶段提交 sink，需要实现一个 TwoPhaseCommitSinkFunction
+
+**source和sink具体运行:**
+
+具体的两阶段提交步骤总结如下：
+
+1)某个checkpoint的第一条数据来了之后，开启一个 Kafka 的事务（transaction），正常写入 Kafka 分区日志但标记为未提交，这就是“预提交”(第一阶段提交)
+
+2)jobmanager 触发 checkpoint 操作，barrier 从 source 开始向下传递，遇到 barrier 的算子状态后端会进行相应进行checkpoint，并通知 jobmanagerr
+
+3)sink 连接器收到 barrier，保存当前状态，存入 checkpoint，通知 jobmanager，并开启下一阶段的事务，用于提交下个检查点的数据
+
+4)jobmanager 收到所有任务的通知，发出确认信息，表示 checkpoint 完成
+
+5)sink 任务收到 jobmanager 的确认信息，正式提交这段时间的数据(第二阶段提交)
+
+6)外部Kafka关闭事务，提交的数据可以正常消费了
 
 # 8.Flink流处理高阶编程实战
 
