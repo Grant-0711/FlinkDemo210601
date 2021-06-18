@@ -1,8 +1,8 @@
-时间语义：
+# 时间语义
 
 Flink1.12 之前默认是处理时间，Flink1.12之后默认是事件时间。
 
-水印
+# 水印
 
 测量事件时间进度的方式（流中特殊的数据，用来表示时间）（和窗口一起使用）
 
@@ -41,7 +41,7 @@ static <T> WatermarkStrategy<T> forMonotonousTimestamps() {
 
 
 
-产生水印的源码
+## 产生水印的源码
 
 WatermarkStrategy的静态方法：
 
@@ -99,7 +99,7 @@ public class BoundedOutOfOrdernessWatermarks<T> implements WatermarkGenerator<T>
 
 
 
-产生水印的方式：
+## 产生水印的方式
 
 周期性的生成
 
@@ -113,7 +113,7 @@ public class BoundedOutOfOrdernessWatermarks<T> implements WatermarkGenerator<T>
 
 
 
-解决多并行度下数据倾斜的问题
+## 解决多并行度下数据倾斜的问题
 
 产生原因：
 
@@ -180,7 +180,7 @@ default WatermarkStrategy<T> withIdleness(Duration idleTimeout) {
 
 
 
-允许迟到数据（窗口才具有的权限）
+## 允许迟到数据（窗口才具有的权限）
 
 因此要写在窗口之后
 
@@ -195,11 +195,11 @@ default WatermarkStrategy<T> withIdleness(Duration idleTimeout) {
 
 
 
-总结解决迟到数据的方法
+## 总结解决迟到数据的方法
 
 分两种情况：窗口未关闭和窗口关闭
 
-窗口未关闭
+### 窗口未关闭
 
 产生水印时设置容忍度
 
@@ -215,7 +215,7 @@ WatermarkStrategy.//是一个接口，有三个静态方法
                 .allowedLateness(Time.seconds(3))//允许迟到三秒
 ```
 
-窗口关闭情况下采用侧流输出
+### 窗口关闭情况下采用侧流输出
 
 ```java
                 .assignTimestampsAndWatermarks(WatermarkStrategy.
@@ -233,7 +233,7 @@ WatermarkStrategy.//是一个接口，有三个静态方法
 
 
 
-侧输出流的用法
+## 侧输出流的用法
 
 处理迟到数据（见上）
 
