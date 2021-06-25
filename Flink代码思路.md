@@ -270,3 +270,38 @@ mainS.getSideOutput(new OutputTag<WaterSensor>("late") {});
 
 ```
 
+# 状态后端
+
+状态后端的作用是维持有状态算子的状态，维持具体指的是访问，存储以及维护
+
+## **状态后端的主要任务：**
+
+本地状态的管理（Taskmanager）
+
+检查点（checkpoint）状态写入远程存储
+
+## **状态后端的分类**
+
+MemoryStateBackend， FsStateBackend 和 RocksDBStateBackend
+
+区别是MemoryStateBackend的checkpoint状态存在JobManager内存中，而FsStateBackend存在文件系统例如hdfs中
+
+RocksDBStateBackend的本地状态存储在TaskManager的RocksDB数据库中(实际是内存+磁盘) ，Checkpoint在外部文件系统(hdfs)中.
+
+## **配置状态后端**
+
+### **全局配置状态后端**
+
+在flink-conf.yaml文件中设置默认的全局后端
+
+### **在代码中配置状态后端**
+
+可以在代码中单独为这个Job设置状态后端.可以在代码中单独为这个Job设置状态后端.
+
+```java
+env.setStateBackend(new MemoryStateBackend());
+env.setStateBackend(new FsStateBackend("hdfs://hadoop162:8020/flink/checkpoints/fs"));
+```
+
+如果要使用RocksDBBackend, 需要先引入依赖:见Flink文档
+
