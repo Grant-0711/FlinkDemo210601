@@ -305,3 +305,36 @@ env.setStateBackend(new FsStateBackend("hdfs://hadoop162:8020/flink/checkpoints/
 
 如果要使用RocksDBBackend, 需要先引入依赖:见Flink文档
 
+# Flink中richfunction的一点小作用
+
+泽米 2017-10-12 19:31:46 13901 收藏 13
+分类专栏： flink 文章标签： flink
+版权
+
+①传递参数
+所有需要用户定义的函数都可以转换成richfunction，例如实现map operator中你需要实现一个内部类，并实现它的map方法：
+
+data.map (new MapFunction<String, Integer>() {
+  public Integer map(String value) { return Integer.parseInt(value); }
+});
+
+    1
+    2
+    3
+
+然后我们可以将其转换为RichMapFunction：
+
+data.map (new RichMapFunction<String, Integer>() {
+  public Integer map(String value) { return Integer.parseInt(value); }
+});
+
+    1
+    2
+    3
+
+当然，RichFuction除了提供原来MapFuction的方法之外，还提供open, close, getRuntimeContext 和setRuntimeContext方法，这些功能可用于参数化函数（传递参数），创建和完成本地状态，访问广播变量以及访问运行时信息以及有关迭代中的信息。
+下面我们来看看RichFuction中传递参数的例子，以下代码是测试RichFilterFuction的例子，基于DataSet而非DataStream。
+这里写图片描述
+由代码可见，可以将Configuration中的limit参数的值传递进RichFuction里面，通过后面withParameters方法传递进去，最后的结果是这里写图片描述
+由此可见，我从configuration中获取了limit的值，并设定了fliter的阈值是2，从而过滤了1，2。
+②传递广播变量，原理和上面差不多，下面我直接把代码贴出来：
