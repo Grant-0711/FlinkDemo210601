@@ -454,7 +454,7 @@ JobManager会向资源管理器（ResourceManager）请求执行任务必要的�
 
 负责接收用户提供的作业，并且负责为这个新提交的作业启动一个新的JobManager 组件. Dispatcher也会启动一个Web UI，用来方便地展示和监控作业执行的信息。Dispatcher在架构中可能并不是必需的，这取决于应用提交运行的方式。
 
-#### 4.1.2.3 JobMaster
+#### 4.1.2.3  JobMaster
 
 JobMaster负责管理单个JobGraph的执行.多个Job可以同时运行在一个Flink集群中, 每个Job都有一个自己的JobMaster.
 

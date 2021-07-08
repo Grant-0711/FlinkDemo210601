@@ -349,3 +349,120 @@ data.map (new RichMapFunction<String, Integer>() {
 
 https://www.processon.com/diagraming/60e6b51507912953cd3155f1
 
+## 客户端
+
+准备和发送dataflow到JobManager. 
+
+然后客户端可断开与JobManager的连接(detached mode)
+
+也可保持与JobManager的连接(attached mode)
+
+客户端作为触发执行的Java或者scala代码的一部分运行, 也可以在命令行运行:
+
+```shell
+bin/flink run ...
+```
+
+## JobManager
+
+控制应用程序执行主进程
+
+每个应用程序都会被一个JobManager所控制执行。
+
+### ①JobManager接收应用程序
+
+JobManager会先接收要执行程序，这个程序会包括：
+
+作业图（JobGraph）
+
+逻辑数据流图（logical dataflow graph）
+
+打包了所有的类、库和其它资源的JAR包
+
+### ②JobManager将JobGraph To 物理层面的数据流图
+
+JobManager把JobGraph转换成一个物理层面的数据流图，这个图被叫做“执行图”（ExecutionGraph），包含了所有可以并发执行的任务。
+
+### ③JobManager 向 ResourceManager 申请资源（slot）
+
+JobManager会向资源管理器（ResourceManager）请求执行任务必要的资源，也就是任务管理器（TaskManager）上的插槽（slot）。
+
+### ④分发执行图
+
+一旦它获取到了足够的资源，就会将执行图分发到真正运行它们的TaskManager上。
+
+而在运行过程中，JobManager会负责所有需要中央协调的操作，比如说检查点（checkpoints）的协调。
+
+**JobManager 进程包含3个不同的组件**
+
+ResourceManager， Dispatcher and JobMaster
+
+### ResourceManager
+
+**注意这个ResourceManager不是Yarn中的ResourceManager**
+
+主要是管理slot
+
+### Dispatcher 
+
+接收作业，启动WebUI
+
+### JobMaster
+
+管理单个JobGraph的执行.多个Job可以同时运行在一个Flink集群中, 每个Job都有一个自己的JobMaster.
+
+### TaskManager与Slots
+
+worker（TaskManager）= JVM进程 
+
+worker可以接收多个task，task是进程级别的，slot来控制接收多少个task
+
+### Parallelism
+
+流程序的并行度是所有算子的最大子任务数，也就是最大的算子并行度
+
+### One-to-one
+
+map、filter、flatMap等算子都是one-to-one的对应关系
+
+**个数，顺序都相同**
+
+### Redistributing
+
+keyBy()基于**hashCode重分区**、broadcast和rebalance会**随机重新分区**，这些算子都会引起redistribute过程，而redistribute过程就类似于Spark中的shuffle过程。类似于spark中的宽依赖
+
+### Task与SubTask
+
+一个算子就是一个Task. 一个算子的并行度是几, 这个Task就有几个SubTask
+
+### Operator Chains（任务链）
+
+将相同并行度的oneToOne算子链接成一个task，被一个线程执行
+
+**是非常有效的优化：它能减少线程之间的切换和基于缓存区的数据交换，在减少时延的同时提升吞吐量。链接的行为可以在编程API中进行指定。**
+
+###  ExecutionGraph（执行图）
+
+由逻辑流图转换而成的
+
+StreamGraph -> JobGraph -> ExecutionGraph -> Physical Graph
+
+其中Physical Graph是对Job调度之后在各个TaskManager 上部署 Task 后形成的“图”，并不是一个具体的数据结构
+
+### yarn-cluster提交流程per-job
+
+https://www.processon.com/diagraming/60e6d1bb07912953cd31d5a0
+
+1.Flink任务提交后，Client向HDFS上传Flink的Jar包和配置
+
+2.向Yarn ResourceManager提交任务，ResourceManager分配Container资源
+
+3.通知对应的NodeManager启动ApplicationMaster，ApplicationMaster启动后加载Flink的Jar包和配置构建环境，然后启动JobManager
+
+4.ApplicationMaster向ResourceManager申请资源启动TaskManager
+
+5.ResourceManager分配Container资源后，由ApplicationMaster通知资源所在节点的NodeManager启动TaskManager
+
+6.NodeManager加载Flink的Jar包和配置构建环境并启动TaskManager
+
+7.TaskManager启动后向JobManager发送心跳包，并等待JobManager向其分配任务
