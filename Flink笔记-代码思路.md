@@ -338,3 +338,14 @@ data.map (new RichMapFunction<String, Integer>() {
 由代码可见，可以将Configuration中的limit参数的值传递进RichFuction里面，通过后面withParameters方法传递进去，最后的结果是这里写图片描述
 由此可见，我从configuration中获取了limit的值，并设定了fliter的阈值是2，从而过滤了1，2。
 ②传递广播变量，原理和上面差不多，下面我直接把代码贴出来：
+
+
+
+
+
+
+
+# Flink运行架构
+
+https://www.processon.com/diagraming/60e6b51507912953cd3155f1
+

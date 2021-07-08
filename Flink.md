@@ -16,7 +16,11 @@ Table API，对结构化数据进行查询操作，将结构化数据抽象成�
 
 ## 1.2 Flink跟Spark Streaming的区别
 
-这个问题是一个非常宏观的问题，因为两个框架的不同点非常之多。但是在面试时有非常重要的一点一定要回答出来：**Flink 是标准的实时处理引擎，基于事件驱动。而 Spark Streaming 是微批（Micro-Batch）的模型。**
+这个问题是一个非常宏观的问题，因为两个框架的不同点非常之多。
+
+但是在面试时有非常重要的一点一定要回答出来：
+
+**Flink 是标准的实时处理引擎，基于事件驱动。而 Spark Streaming 是微批（Micro-Batch）的模型。**
 
 下面我们就分几个方面介绍两个框架的主要区别：
 
@@ -26,7 +30,9 @@ Table API，对结构化数据进行查询操作，将结构化数据抽象成�
 
 3）时间机制Spark Streaming 支持的时间机制有限，只支持处理时间。 Flink 支持了流处理程序在时间上的三个定义：处理时间、事件时间、注入时间。同时也支持 watermark 机制来处理滞后数据。
 
-4）容错机制对于 Spark Streaming 任务，我们可以设置 checkpoint，然后假如发生故障并重启，我们可以从上次 checkpoint 之处恢复，但是这个行为只能使得数据不丢失，可能会重复处理，不能做到恰好一次处理语义。Flink 则使用两阶段提交协议来解决这个问题。
+4）容错机制对于 Spark Streaming 任务，我们可以设置 checkpoint，然后假如发生故障并重启，我们可以从上次 checkpoint 之处恢复，但是这个行为只能使得数据不丢失，可能会重复处理，不能做到精准一次性语义。
+
+Flink 则使用两阶段提交协议来解决这个问题。
 
 ## 1.3 发展历史
 
@@ -393,6 +399,8 @@ get /flink-standalone/cluster_grantu/leader/rest_server_lock
 ## 4.1 运行架构
 
 https://ci.apache.org/projects/flink/flink-docs-release-1.11/fig/processes.svg
+
+https://www.processon.com/diagraming/60e6b51507912953cd3155f1
 
 Flink运行时包含2种进程:1个**JobManager**和至少1个**TaskManager**
 
