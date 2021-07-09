@@ -466,3 +466,4 @@ https://www.processon.com/diagraming/60e6d1bb07912953cd31d5a0
 6.NodeManager加载Flink的Jar包和配置构建环境并启动TaskManager
 
 7.TaskManager启动后向JobManager发送心跳包，并等待JobManager向其分配任务
+
