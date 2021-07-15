@@ -223,9 +223,110 @@ public CustomCommandLine validateAndGetActiveCommandLine(CommandLine commandLine
 			return cli;
 ```
 
+### 如果返回FlinkYarnSessionCli
+
+FlinkYarnSessionCli.java => Yarn客户端isActive的判断逻辑：
+
+要获取是否是perJob还是session模式
+
+具体的
+
+​	判断是否是per-job模式，需要指定”-m yarn-cluster”; ID = "yarn-cluster"
+
+​	判断yarn-session模式是否启动，是否存在flink在yarn上的appID
+
+```java
+public boolean isActive(CommandLine commandLine) {
+	final String jobManagerOption = commandLine.getOptionValue(addressOption.getOpt(), null);
+	// 是否指定为per-job模式，即指定”-m yarn-cluster”; ID = "yarn-cluster"
+	final boolean yarnJobManager = ID.equals(jobManagerOption);
+	// 是否存在flink在yarn的appID，即yarn-session模式是否启动
+	final boolean hasYarnAppId = commandLine.hasOption(applicationId.getOpt())
+			|| configuration.getOptional(YarnConfigOptions.APPLICATION_ID).isPresent();
+	// executor的名字为 "yarn-session" 或 "yarn-per-job"
+	final boolean hasYarnExecutor = YarnSessionClusterExecutor.NAME.equals(configuration.get(DeploymentOptions.TARGET))
+			|| YarnJobClusterExecutor.NAME.equals(configuration.get(DeploymentOptions.TARGET));
+	//
+	return hasYarnExecutor || yarnJobManager || hasYarnAppId || (isYarnPropertiesFileMode(commandLine) && yarnApplicationIdFromYarnProperties != null);
+}
+```
+
 
 
 ## 获取有效配置
+
+CliFrontend.java
+
+```java
+protected void run(String[] args) throws Exception {
+	... ...
+	final Configuration effectiveConfiguration = getEffectiveConfiguration(
+				activeCommandLine, commandLine, programOptions, jobJars);
+... ...}
+```
+
+FlinkYarnSessionCli.java
+
+```java
+public Configuration toConfiguration(CommandLine commandLine) throws FlinkException {
+	// we ignore the addressOption because it can only contain "yarn-cluster"
+	final Configuration effectiveConfiguration = new Configuration();
+
+	applyDescriptorOptionToConfig(commandLine, effectiveConfiguration);
+
+	final ApplicationId applicationId = getApplicationId(commandLine);
+	if (applicationId != null) {
+		final String zooKeeperNamespace;
+		if (commandLine.hasOption(zookeeperNamespace.getOpt())){
+			zooKeeperNamespace = commandLine.getOptionValue(zookeeperNamespace.getOpt());
+		} else {
+			zooKeeperNamespace = effectiveConfiguration.getString(HA_CLUSTER_ID, applicationId.toString());
+		}
+
+		effectiveConfiguration.setString(HA_CLUSTER_ID, zooKeeperNamespace);
+		effectiveConfiguration.setString(YarnConfigOptions.APPLICATION_ID, ConverterUtils.toString(applicationId));
+		// TARGET 就是execution.target，目标执行器
+		//决定后面什么类型的执行器提交任务：yarn-session、yarn-per-job
+		effectiveConfiguration.setString(DeploymentOptions.TARGET, YarnSessionClusterExecutor.NAME);
+	} else {
+		effectiveConfiguration.setString(DeploymentOptions.TARGET, YarnJobClusterExecutor.NAME);
+	}
+
+	if (commandLine.hasOption(jmMemory.getOpt())) {
+		String jmMemoryVal = commandLine.getOptionValue(jmMemory.getOpt());
+		if (!MemorySize.MemoryUnit.hasUnit(jmMemoryVal)) {
+			jmMemoryVal += "m";
+		}
+		effectiveConfiguration.set(JobManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse(jmMemoryVal));
+	}
+
+	if (commandLine.hasOption(tmMemory.getOpt())) {
+		String tmMemoryVal = commandLine.getOptionValue(tmMemory.getOpt());
+		if (!MemorySize.MemoryUnit.hasUnit(tmMemoryVal)) {
+			tmMemoryVal += "m";
+		}
+		effectiveConfiguration.set(TaskManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.parse(tmMemoryVal));
+	}
+
+	if (commandLine.hasOption(slots.getOpt())) {
+		effectiveConfiguration.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, Integer.parseInt(commandLine.getOptionValue(slots.getOpt())));
+	}
+
+	dynamicPropertiesEncoded = encodeDynamicProperties(commandLine);
+	if (!dynamicPropertiesEncoded.isEmpty()) {
+		Map<String, String> dynProperties = getDynamicProperties(dynamicPropertiesEncoded);
+		for (Map.Entry<String, String> dynProperty : dynProperties.entrySet()) {
+			effectiveConfiguration.setString(dynProperty.getKey(), dynProperty.getValue());
+		}
+	}
+
+	if (isYarnPropertiesFileMode(commandLine)) {
+		return applyYarnProperties(effectiveConfiguration);
+	} else {
+		return effectiveConfiguration;}}
+```
+
+
 
 ## 调用user main
 
