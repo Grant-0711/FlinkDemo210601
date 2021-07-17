@@ -330,7 +330,251 @@ public Configuration toConfiguration(CommandLine commandLine) throws FlinkExcept
 
 ## 调用user main
 
+CliFrontend.java
+
+```java
+protected void run(String[] args) throws Exception {
+	... ...
+	executeProgram(effectiveConfiguration, program);	
+... ...
+}
+protected void executeProgram(final Configuration configuration, final PackagedProgram program) throws ProgramInvocationException {
+	ClientUtils.executeProgram(new DefaultExecutorServiceLoader(), configuration, program, false, false);
+}
+```
+
+ClientUtils.java
+
+```java
+public static void executeProgram(
+		PipelineExecutorServiceLoader executorServiceLoader,
+		Configuration configuration,
+		PackagedProgram program,
+		boolean enforceSingleJobExecution,
+		boolean suppressSysout) throws ProgramInvocationException {
+	checkNotNull(executorServiceLoader);
+	final ClassLoader userCodeClassLoader = program.getUserCodeClassLoader();
+	final ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+	try {
+		//设置当前的classloader为用户代码的classloader
+		Thread.currentThread().setContextClassLoader(userCodeClassLoader);
+
+		LOG.info("Starting program (detached: {})", !configuration.getBoolean(DeploymentOptions.ATTACHED));
+	//用户代码中的getExecutionEnvironment会返回该Environment
+		ContextEnvironment.setAsContext(
+			executorServiceLoader,
+			configuration,
+			userCodeClassLoader,
+			enforceSingleJobExecution,
+			suppressSysout);
+
+		StreamContextEnvironment.setAsContext(
+			executorServiceLoader,
+			configuration,
+			userCodeClassLoader,
+			enforceSingleJobExecution,
+			suppressSysout);
+
+		try {
+			//调用用户代码的main方法
+			program.invokeInteractiveModeForExecution();
+		} finally {
+			ContextEnvironment.unsetAsContext();
+			StreamContextEnvironment.unsetAsContext();
+		}
+	} finally {
+		Thread.currentThread().setContextClassLoader(contextClassLoader);
+	}
+}
+```
+
+PackagedProgram.java
+
+```java
+public void invokeInteractiveModeForExecution() throws ProgramInvocationException {
+	callMainMethod(mainClass, args);
+}
+
+
+private static void callMainMethod(Class<?> entryClass, String[] args) throws ProgramInvocationException {
+	... ...
+	mainMethod = entryClass.getMethod("main", String[].class);
+	... ...
+	// 反射调用main函数
+	mainMethod.invoke(null, (Object) args);
+	... ...
+}
+```
+
+### 总结
+
+流程是CliFrontend的run方法调用
+
+​	executeProgram(effectiveConfiguration, program)方法
+
+​		它调用
+
+​			ClientUtils.executeProgram
+
+​				它调用PackagedProgram的
+
+​					invokeInteractiveModeForExecution
+
+​						它调用
+
+​						private static void callMainMethod
+
+​				
+
+PackagedProgram这个类是针对打成jar包的flink用户程序，它提供了提取嵌套库、搜索程序入口点和提取程序计划的功能。 
+
+
+
 ## 执行sc的execute方法
 
+StreamExecutionEnvironment.java
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# yarn-per-job提交流程
+
+## 构建集群：
+
+AbstractJobClusterExecutor.java
+
+## 启动 yarn 客户端：
+
+YarnClusterClientFactory.java
+
+## 获取集群配置参数：
+
+AbstractContainerizedClusterClientFactory.java
+
+## 部署集群：
+
+YarnClusterDescriptor.java
+
+## 上传 jar 包和配置文件到 HDFS：
+
+YarnClusterDescriptor.java
+
+## 封装 AM 参数和命令：
+
+YarnClusterDescriptor.java
+
+## 提交应用
+
+YarnClientImpl.java
+
+## 创建 Dispatcher、ResourceManager：
+
+Per-job模式的AM container加载运行入口是YarnJobClusterEntryPoint中的main()方法
+
+YarnJobClusterEntrypoint.java
+
+## 创建 YarnResourceManager：
+
+ResourceManagerFactory.java
+
+## 创建并启动 Dispatcher ：
+
+DefaultDispatcherRunnerFactory.java 
+
+## 启动 ResourceManager ：
+
+DefaultDispatcherResourceManagerComponentFactory.java
+
+##  Dispatcher 启动 JobManager：
+
+Dispatcher.java
+
+## ResourceManager 启动 SlotManager：
+
+ResourceManager.java
+
+## 创建 Yarn 的 RM 和 NM 客户端：
+
+ActiveResourceManager.java
+
+AbstractResourceManagerDriver.java
+
+YarnResourceManagerDriver.java
+
+## 启动 SlotManager：
+
+StandaloneLeaderElectionService.java
+
+ResourceManager.java
+
+SlotManagerImpl.java
+
+##  JobManager 申请 Slot：
+
+### 启动 SlotPool
+
+JobMaster启动时，启动SlotPool，向ResourceManager注册
+
+向 ResourceManager 注册
+
+RegisteredRpcConnection.java
+
+JobMaster.java的内部类ResourceManagerConnection
+
+### SlotPool 申请 slot
+
+注册成功调用onRegistrationSuccess(), 向ResourceManager进行slot的申请:
+
+JobMaster.java的内部类ResourceManagerConnection
+
+SlotPoolImpl.java
+
+SlotManagerImpl.java
+
+## **ResourceManager** 申请资源：
+
+ResourceManager.java
+
+## TaskManager启动：
+
+YarnTaskExecutorRunner.java
+
+TaskManagerRunner.java
+
+## 向ResourceManager注册：
+
+TaskExecutor.java
+
+## ResourceManager 分配 Slot：
+
+SlotManagerImpl.java
+
+## TaskManager 提供 Slot：
+
+TaskExecutor.java
+
+JobMaster.java
+
+SlotPoolImpl.java
 
