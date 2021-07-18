@@ -14,3 +14,4 @@ TaskManager是进程级别的，那么一个Flink任务会有一个TM还是多�
 
 
 
+maxwell每次任务开启是同步增量数据，在有些flink任务没有跑的时候也会产生业务数据在mysql，那么应该是每次启动业务相关flink任务时都要使用bootstrap 更新mysql旧数据？
